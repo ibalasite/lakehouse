@@ -22,7 +22,7 @@ from __future__ import annotations
 import json
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from airflow import DAG
 from airflow.operators.bash import BashOperator
@@ -77,7 +77,7 @@ def on_failure_callback(context: dict) -> None:
         "execution_date": str(context.get("execution_date", "")),
         "log_url":        ti_obj.log_url if ti_obj is not None else "",
         "exception":      str(context.get("exception", "")),
-        "timestamp":      datetime.utcnow().isoformat(),
+        "timestamp":      datetime.now(tz=timezone(timedelta(hours=8))).isoformat(),
     }
     try:
         os.makedirs(os.path.dirname(os.path.abspath(FAILURE_LOG)), exist_ok=True)

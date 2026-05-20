@@ -33,7 +33,7 @@ WITH source AS (
   FROM {{ source('bronze', 'raw_tickets') }}
   {% if is_incremental() %}
   -- Load only rows newer than the latest watermark already in bronze.
-  -- A 10-minute overlap buffer guards against late Kafka delivery.
+  -- A 10-minute overlap buffer guards against late HTTP data-source delivery.
   WHERE ingested_at > (
     SELECT COALESCE(
       MAX(ingested_at) - INTERVAL '10' MINUTE,

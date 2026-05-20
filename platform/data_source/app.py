@@ -103,7 +103,7 @@ def _generate_ticket(now: datetime) -> dict:
         "prblm_class_id":           _rng.randint(1, 20),
         "prblm_intclass_id":        _rng.randint(1, 30),
         "prblm_perform_id":         _choice(PERFORM_IDS, PERFORM_W),
-        "prblm_complain_id":        1 if _rng.random() < 0.05 else 0,
+        "prblm_complain_id":        (lambda r: 1 if r < 0.85 else (2 if r < 0.95 else 3))(_rng.random()),
         "prblm_processuser":        f"EMP-{_rng.randint(1000, 9999):04d}",
         "prblm_doneuser":           f"EMP-{_rng.randint(1000, 9999):04d}" if is_resolved else None,
         "prblm_sysuser":            f"EMP-{_rng.randint(1000, 9999):04d}",

@@ -88,9 +88,9 @@ This repository is a **self-contained local data lakehouse** that demonstrates a
 | BI | Metabase | **客服問題單日報**（5 張圖）+ **即時監控**（3 張卡，15 分自動刷新）|
 | 平台 | k3s（Rancher Desktop）| 具備 NodePort 存取的本地 Kubernetes |
 
-**Seed data:** the stack generates ~200,000 rows of synthetic customer support tickets using `bulk_load_parquet.py` (pyiceberg direct write, bypassing Trino INSERT for speed). After the seed, the Data Source POD continuously generates 5–20 rows every 5 minutes; the `lakehouse_streaming` DAG ingests them every 15 minutes and propagates through the full Medallion pipeline.
+**Seed data:** the stack generates ~10M rows of synthetic customer support tickets using `04_generate_tickets.py` (pyiceberg direct write, bypassing Trino INSERT for speed). After the seed, the Data Source POD continuously generates 5–20 rows every 5 minutes; the `lakehouse_streaming` DAG ingests them every 15 minutes and propagates through the full Medallion pipeline.
 
-**種子資料：** 堆疊使用 `bulk_load_parquet.py` 生成約 20 萬筆合成客服問題單（pyiceberg 直接寫入，繞過 Trino INSERT 以提升速度）。種子完成後，Data Source POD 每 5 分鐘持續生成 5–20 筆資料；`lakehouse_streaming` DAG 每 15 分鐘攝入並推進整個 Medallion pipeline。
+**種子資料：** 堆疊使用 `04_generate_tickets.py` 生成約 1,000 萬筆合成客服問題單（pyiceberg 直接寫入，繞過 Trino INSERT 以提升速度）。種子完成後，Data Source POD 每 5 分鐘持續生成 5–20 筆資料；`lakehouse_streaming` DAG 每 15 分鐘攝入並推進整個 Medallion pipeline。
 
 ---
 
@@ -115,8 +115,7 @@ init_env.sh  →  .env (random credentials)
                Jobs (run in order):
                01-minio-init       → creates lakehouse bucket
                02-polaris-bootstrap → registers catalog + principal
-               04-generate-tickets → bulk_load_parquet.py → Iceberg raw.raw_tickets (~200k rows seed)
-               06-populate-cache   → populate_mysql_cache.py → MySQL cache tables
+               04-generate-tickets → 04_generate_tickets.py → Iceberg raw.raw_tickets (~10M rows seed)
                05-metabase-setup   → 05_metabase_setup.py → 2 dashboards (日報 + 即時監控)
 ```
 
@@ -460,9 +459,9 @@ All checks passed.
 
 ## Airflow DAGs
 
-Three DAGs are deployed automatically. All DAGs read credentials from Kubernetes secrets injected as environment variables — no credentials appear in DAG source code.
+Four DAGs are deployed automatically. All DAGs read credentials from Kubernetes secrets injected as environment variables — no credentials appear in DAG source code.
 
-三個 DAG 自動部署。所有 DAG 從以環境變數注入的 Kubernetes Secrets 讀取憑證——DAG 原始碼中不含任何憑證。
+四個 DAG 自動部署。所有 DAG 從以環境變數注入的 Kubernetes Secrets 讀取憑證——DAG 原始碼中不含任何憑證。
 
 | DAG | File | Schedule | Purpose |
 |---|---|---|---|
@@ -697,6 +696,7 @@ lakehouse/
 ├── init_env.ps1                         # Step 1: generate .env (Windows PowerShell)
 ├── k8s/
 │   ├── deploy.sh                        # Step 2: one-click deploy (macOS/Linux)
+│   ├── show_services.sh                 # Print all service URLs + current credentials
 │   ├── deploy.ps1                       # Step 2: one-click deploy (Windows PowerShell)
 │   ├── data-source.yaml                 # Data Source POD: Deployment + ClusterIP Service
 │   ├── namespace.yaml / pvc.yaml
@@ -709,9 +709,8 @@ lakehouse/
 │   └── jobs/
 │       ├── 01-minio-init.yaml           # Creates lakehouse bucket in MinIO
 │       ├── 02-polaris-bootstrap.yaml    # Registers Iceberg catalog and principal
-│       ├── 04-generate-tickets.yaml     # Runs bulk_load_parquet.py (seed ~200k rows)
-│       ├── 05-metabase-setup.yaml       # Creates 2 dashboards (日報 + 即時監控)
-│       └── 06-populate-cache.yaml       # Runs populate_mysql_cache.py
+│       ├── 04-generate-tickets.yaml     # Runs 04_generate_tickets.py (seed ~10M rows)
+│       └── 05-metabase-setup.yaml       # Creates 2 dashboards (日報 + 即時監控)
 ├── platform/
 │   ├── data_source/
 │   │   └── app.py                       # Data Source POD: pure-stdlib HTTP server
@@ -730,7 +729,9 @@ lakehouse/
 │       └── e2e_smoke_test.py            # End-to-end pipeline verification (6-step)
 ├── dbt/
 │   └── models/
-│       ├── staging/                     # stg_bronze_tickets, stg_silver_tickets
+│       ├── bronze/                      # stg_bronze_tickets (append-only raw ingest)
+│       ├── silver/                      # stg_silver_tickets (PII mask, SLA flags)
+│       ├── gold/macros/                 # generate_schema_name (prevents raw_gold prefix)
 │       └── gold/
 │           ├── facts/
 │           │   ├── fact_ticket_day_wide.sql   # daily aggregation (MERGE, incremental)
@@ -747,14 +748,14 @@ lakehouse/
 - `platform/data_source/app.py` is a pure-stdlib Python HTTP server with `enableServiceLinks: false` in its pod spec (prevents k8s from injecting `DATA_SOURCE_PORT=tcp://...` which would crash `int()` parsing). The pod generates 5–20 rows every 5 minutes into an in-memory deque; `GET /api/tickets/drain` atomically returns and clears the buffer.
 - `platform/init/fetch_and_ingest.py` polls `/api/tickets/drain`, converts ISO timestamps to microsecond epoch for PyArrow, and appends to `iceberg.raw.raw_tickets` via pyiceberg direct write. Called by the `lakehouse_streaming` DAG every 15 minutes.
 - `dbt/models/gold/facts/fact_ticket_hour_wide.sql` is an incremental MERGE model with a 7-dimension composite unique key; watermark covers the trailing 24 hours to absorb late silver updates.
-- `bulk_load_parquet.py` writes directly to Iceberg via pyiceberg and MinIO, bypassing Trino INSERT. This achieves approximately 200,000–1,000,000 rows per second on typical laptop hardware.
+- `04_generate_tickets.py` writes 10M rows directly to Iceberg via pyiceberg and MinIO, bypassing Trino INSERT. This achieves approximately 200,000–1,000,000 rows per second on typical laptop hardware.
 - `populate_mysql_cache.py` runs aggregation SQL on Trino and bulk-inserts into MySQL using `executemany` with 5,000-row batches. Supports `--hourly-only` flag for the streaming DAG to skip daily table updates.
 - `configmap-trino.yaml` is the only YAML that requires envsubst. It contains `${POLARIS_CLIENT_ID}`, `${POLARIS_CLIENT_SECRET}`, `${MINIO_ROOT_USER}`, and `${MINIO_ROOT_PASSWORD}` placeholders that `deploy.sh` substitutes from `.env` using an inline Python script before applying.
 
 - `platform/data_source/app.py` 是純 stdlib Python HTTP 伺服器，pod spec 設定 `enableServiceLinks: false`（防止 k8s 注入 `DATA_SOURCE_PORT=tcp://...` 造成 `int()` 解析崩潰）。pod 每 5 分鐘向記憶體 deque 生成 5–20 筆資料；`GET /api/tickets/drain` 原子性地返回並清除緩衝區。
 - `platform/init/fetch_and_ingest.py` 輪詢 `/api/tickets/drain`，將 ISO 時間戳轉換為 PyArrow 所需的微秒 epoch，並透過 pyiceberg 直接寫入追加至 `iceberg.raw.raw_tickets`。由 `lakehouse_streaming` DAG 每 15 分鐘呼叫。
 - `dbt/models/gold/facts/fact_ticket_hour_wide.sql` 是增量 MERGE 模型，具備 7 維複合 unique_key；水位線涵蓋過去 24 小時以吸收遲到的 silver 更新。
-- `bulk_load_parquet.py` 透過 pyiceberg 和 MinIO 直接寫入 Iceberg，在典型筆電硬體上可達約 200,000–1,000,000 行/秒。
+- `04_generate_tickets.py` 寫入 1,000 萬筆資料，透過 pyiceberg 和 MinIO 直接寫入 Iceberg，在典型筆電硬體上可達約 200,000–1,000,000 行/秒。
 - `populate_mysql_cache.py` 在 Trino 執行聚合 SQL，以 5,000 行批次透過 `executemany` 大量插入 MySQL。支援 `--hourly-only` 旗標供串流 DAG 跳過日報表更新。
 - `configmap-trino.yaml` 是唯一需要 envsubst 的 YAML，`deploy.sh` 在套用前使用內嵌 Python 腳本從 `.env` 替換佔位符。
 

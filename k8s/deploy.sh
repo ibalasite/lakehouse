@@ -351,18 +351,5 @@ if [[ "${SKIP_JOBS}" == "false" ]]; then
 fi
 
 # ── 16. Summary ────────────────────────────────────────────────────────────────
-printf '\n%s══════════════════════════════════════════════════════%s\n' "${BOLD}" "${RESET}"
-printf '%s  Lakehouse K8s Stack — Service URLs%s\n' "${GREEN}" "${RESET}"
-printf '%s══════════════════════════════════════════════════════%s\n\n' "${BOLD}" "${RESET}"
-printf '  %-22s %s\n' "MinIO API"       "http://localhost:30900"
-printf '  %-22s %s\n' "MinIO Console"   "http://localhost:30901"
-printf '  %-22s %s\n' "Trino UI"        "http://localhost:30080"
-printf '  %-22s %s\n' "Airflow UI"      "http://localhost:30888  (admin / see .env AIRFLOW_ADMIN_PASSWORD)"
-printf '  %-22s %s\n' "Metabase"        "http://localhost:30300  (admin@local.com / see .env METABASE_ADMIN_PASSWORD)"
-printf '  %-22s %s\n' "Data Source"     "http://data-source:8080 (cluster-internal — generates 5-20 tickets/5min)"
-printf '\n%s  All services deployed.%s\n\n' "${GREEN}" "${RESET}"
-printf '  To watch pod status:\n'
-printf '    kubectl --context=rancher-desktop -n lakehouse get pods -w\n\n'
-printf '  To re-run a job:\n'
-printf '    kubectl --context=rancher-desktop -n lakehouse delete job <name>\n'
-printf '    kubectl --context=rancher-desktop apply -f k8s/jobs/<name>.yaml\n\n'
+success "All services deployed"
+bash "${SCRIPT_DIR}/show_services.sh"

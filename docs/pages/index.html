@@ -484,7 +484,7 @@
       </tbody>
     </table>
     </div>
-    <p><strong>Seed data:</strong> the stack generates ~200,000 rows of synthetic customer support tickets using <code>bulk_load_parquet.py</code> (pyiceberg direct write, bypassing Trino INSERT for speed). After the seed, the Data Source POD continuously generates 5–20 rows every 5 minutes; <code>lakehouse_streaming</code> ingests them every 15 minutes and propagates through the full Medallion pipeline to live Metabase dashboards. The data is purely synthetic — no real user data is included.</p>
+    <p><strong>Seed data:</strong> the stack generates ~10M rows of synthetic customer support tickets using <code>04_generate_tickets.py</code> (pyiceberg direct write, bypassing Trino INSERT for speed). After the seed, the Data Source POD continuously generates 5–20 rows every 5 minutes; <code>lakehouse_streaming</code> ingests them every 15 minutes and propagates through the full Medallion pipeline to live Metabase dashboards. The data is purely synthetic — no real user data is included.</p>
   </section>
 
   <!-- ─── 2. Architecture ─────────────────────────────────────────────── -->
@@ -509,8 +509,7 @@
                Jobs (run in order):
                01-minio-init       → creates lakehouse bucket
                02-polaris-bootstrap → registers catalog + principal
-               04-generate-tickets → bulk_load_parquet.py → Iceberg raw.raw_tickets (seed ~200k rows)
-               06-populate-cache   → populate_mysql_cache.py → MySQL cache tables
+               04-generate-tickets → 04_generate_tickets.py → Iceberg raw.raw_tickets (seed ~10M rows)
                05-metabase-setup   → 05_metabase_setup.py → 2 dashboards (日報 + 即時監控)</code></pre>
     </div>
 
@@ -997,9 +996,8 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "changeme")  # WRONG — never
 │   └── jobs/
 │       ├── 01-minio-init.yaml           # Creates lakehouse bucket in MinIO
 │       ├── 02-polaris-bootstrap.yaml    # Registers Iceberg catalog and principal
-│       ├── 04-generate-tickets.yaml     # Runs bulk_load_parquet.py (seed ~200k rows)
-│       ├── 05-metabase-setup.yaml       # Creates 2 dashboards (日報 + 即時監控)
-│       └── 06-populate-cache.yaml       # Runs populate_mysql_cache.py
+│       ├── 04-generate-tickets.yaml     # Runs 04_generate_tickets.py (seed ~10M rows)
+│       └── 05-metabase-setup.yaml       # Creates 2 dashboards (日報 + 即時監控)
 ├── platform/
 │   ├── data_source/
 │   │   └── app.py                       # Data Source POD: pure-stdlib HTTP server
@@ -1017,7 +1015,8 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "changeme")  # WRONG — never
 │       ├── 05_metabase_setup.py         # Metabase 2-dashboard auto-setup via REST API
 │       └── e2e_smoke_test.py            # End-to-end pipeline verification (6-step)
 ├── dbt/models/
-│   ├── staging/                         # stg_bronze_tickets, stg_silver_tickets
+│   ├── bronze/                          # stg_bronze_tickets (append-only raw ingest)
+│   ├── silver/                          # stg_silver_tickets (PII mask, SLA flags)
 │   └── gold/
 │       ├── facts/
 │       │   ├── fact_ticket_day_wide.sql # daily MERGE fact (incremental)
@@ -1032,7 +1031,7 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "changeme")  # WRONG — never
       <li><strong><code>platform/data_source/app.py</code></strong> is a pure-stdlib Python HTTP server with <code>enableServiceLinks: false</code> in its pod spec to prevent k8s from injecting <code>DATA_SOURCE_PORT=tcp://...</code> which would crash <code>int()</code> parsing. The pod generates 5–20 rows every 5 minutes into a thread-safe in-memory deque; <code>GET /api/tickets/drain</code> atomically returns and clears the buffer.</li>
       <li><strong><code>platform/init/fetch_and_ingest.py</code></strong> polls <code>/api/tickets/drain</code>, converts ISO timestamps to microsecond epoch for PyArrow, and appends to <code>iceberg.raw.raw_tickets</code> via pyiceberg direct write. Called every 15 minutes by <code>lakehouse_streaming</code>.</li>
       <li><strong><code>dbt/models/gold/facts/fact_ticket_hour_wide.sql</code></strong> is an incremental MERGE model with a 7-dimension composite unique key; watermark covers the trailing 24 hours to absorb late silver updates.</li>
-      <li><strong><code>bulk_load_parquet.py</code></strong> writes directly to Iceberg via pyiceberg and MinIO, bypassing Trino INSERT. This achieves approximately 200,000–1,000,000 rows per second on typical laptop hardware.</li>
+      <li><strong><code>04_generate_tickets.py</code></strong> writes 10M rows directly to Iceberg via pyiceberg and MinIO, bypassing Trino INSERT. This achieves approximately 200,000–1,000,000 rows per second on typical laptop hardware.</li>
       <li><strong><code>populate_mysql_cache.py</code></strong> runs aggregation SQL on Trino and bulk-inserts into MySQL using <code>executemany</code> with 5,000-row batches. Supports <code>--hourly-only</code> flag for the streaming DAG.</li>
       <li><strong><code>configmap-trino.yaml</code></strong> is the only YAML that requires envsubst. <code>deploy.sh</code> substitutes <code>${VAR}</code> placeholders from <code>.env</code> using an inline Python script before applying.</li>
     </ul>
