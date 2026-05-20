@@ -317,6 +317,11 @@ log "  Running airflow-init job..."
 ${KC} wait job/airflow-init --for=condition=complete --timeout=180s \
     || { ${KC} logs job/airflow-init; fail "airflow-init job failed"; }
 wait_ready airflow-webserver 180
+log "  Unpausing all DAGs..."
+for dag in lakehouse_streaming lakehouse_hourly lakehouse_daily lakehouse_backfill; do
+    ${KC} exec deployment/airflow-scheduler -- airflow dags unpause "${dag}" 2>/dev/null \
+        && log "    ✓ ${dag} unpaused" || log "    ! ${dag} not found (skip)"
+done
 success "Airflow ready"
 
 # ── 14. Metabase ──────────────────────────────────────────────────────────────

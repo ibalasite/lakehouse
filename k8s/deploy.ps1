@@ -320,6 +320,11 @@ Log "  Waiting for airflow-init job..."
 KC wait job/airflow-init --for=condition=complete --timeout=180s
 if ($LASTEXITCODE -ne 0) { KC logs job/airflow-init 2>$null; Fail "airflow-init job failed" }
 Wait-Ready 'airflow-webserver' 180
+Log "  Unpausing all DAGs..."
+foreach ($dag in @('lakehouse_streaming','lakehouse_hourly','lakehouse_daily','lakehouse_backfill')) {
+    KC exec deployment/airflow-scheduler -- airflow dags unpause $dag 2>$null
+    if ($LASTEXITCODE -eq 0) { Log "    v $dag unpaused" } else { Log "    ! $dag not found (skip)" }
+}
 Success "Airflow ready"
 
 # ── Step 14: Metabase ──────────────────────────────────────────────────────────
