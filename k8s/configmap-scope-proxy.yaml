@@ -46,6 +46,19 @@ data:
         def do_HEAD(self):
             self._forward("HEAD", None)
 
+        def do_DELETE(self):
+            self._forward("DELETE", None)
+
+        def do_PUT(self):
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length) if content_length else None
+            self._forward("PUT", body)
+
+        def do_PATCH(self):
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length) if content_length else None
+            self._forward("PATCH", body)
+
         def _forward(self, method, body):
             url = UPSTREAM + self.path
             headers = {k: v for k, v in self.headers.items()

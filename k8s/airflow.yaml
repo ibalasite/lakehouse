@@ -136,6 +136,8 @@ spec:
               value: trino
             - name: TRINO_PORT
               value: "8080"
+            - name: MYSQL_HOST
+              value: mysql
             - name: MYSQL_USER
               valueFrom:
                 secretKeyRef: {name: lakehouse-secrets, key: MYSQL_USER}

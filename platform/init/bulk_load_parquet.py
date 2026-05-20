@@ -69,6 +69,7 @@ S3_PREFIX      = "raw/raw_tickets"
 
 TRINO_HOST = os.environ.get("TRINO_HOST", "localhost")
 TRINO_PORT = int(os.environ.get("TRINO_PORT", "8080"))
+POLARIS_HOST = os.environ.get("POLARIS_HOST", "localhost")
 POLARIS_PORT = os.environ.get("POLARIS_PORT", "8181")
 POLARIS_CLIENT_ID     = _require_env("POLARIS_CLIENT_ID")
 POLARIS_CLIENT_SECRET = _require_env("POLARIS_CLIENT_SECRET")
@@ -250,7 +251,7 @@ def get_iceberg_catalog() -> any:
     from pyiceberg.catalog.rest import RestCatalog
     return RestCatalog(
         name="polaris",
-        uri=f"http://localhost:8181/api/catalog",
+        uri=f"http://{POLARIS_HOST}:{POLARIS_PORT}/api/catalog",
         warehouse=BUCKET,
         credential=f"{POLARIS_CLIENT_ID}:{POLARIS_CLIENT_SECRET}",
         scope="PRINCIPAL_ROLE:ALL",

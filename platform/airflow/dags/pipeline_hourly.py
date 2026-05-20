@@ -42,7 +42,7 @@ log = logging.getLogger("refresh_daily")
 
 TRINO_HOST = os.environ.get("TRINO_HOST", "trino")
 TRINO_PORT = int(os.environ.get("TRINO_PORT", "8080"))
-MYSQL_HOST = "mysql"
+MYSQL_HOST = os.environ.get("MYSQL_HOST", "mysql")
 MYSQL_PORT = 3306
 MYSQL_USER = os.environ.get("MYSQL_USER", "lakehouse")
 MYSQL_PASS = os.environ.get("MYSQL_PASSWORD", "")
@@ -137,7 +137,7 @@ log = logging.getLogger("refresh_hourly")
 
 TRINO_HOST = os.environ.get("TRINO_HOST", "trino")
 TRINO_PORT = int(os.environ.get("TRINO_PORT", "8080"))
-MYSQL_HOST = "mysql"
+MYSQL_HOST = os.environ.get("MYSQL_HOST", "mysql")
 MYSQL_PORT = 3306
 MYSQL_USER = os.environ.get("MYSQL_USER", "lakehouse")
 MYSQL_PASS = os.environ.get("MYSQL_PASSWORD", "")
@@ -221,7 +221,7 @@ import requests
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("verify_dashboard")
 
-MB_URL   = "http://metabase:3000"
+MB_URL   = os.environ.get("METABASE_URL", "http://metabase:3000")
 MB_EMAIL = os.environ.get("METABASE_ADMIN_EMAIL", "admin@local.com")
 MB_PASS  = os.environ.get("METABASE_ADMIN_PASSWORD", "")
 
