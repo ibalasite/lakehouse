@@ -8,6 +8,9 @@
 [![Platform](https://img.shields.io/badge/platform-k8s%20k3s-blue)](https://k3s.io)
 [![Iceberg](https://img.shields.io/badge/Apache%20Iceberg-v2-blue?logo=apache)](https://iceberg.apache.org)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Docs](https://img.shields.io/badge/docs-GitHub%20Pages-blue)](https://ibalasite.github.io/lakehouse/)
+
+📄 **[Engineering Design Document (EDD)](https://ibalasite.github.io/lakehouse/edd.html)** · **[Quick Reference](https://ibalasite.github.io/lakehouse/)**
 
 ---
 
