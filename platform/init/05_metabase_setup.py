@@ -294,10 +294,15 @@ def create_card(
         for card in (r.json() if isinstance(r.json(), list) else r.json().get("data", [])):
             if card.get("name") == name:
                 cid = card["id"]
-                log.info("  Card '%s' already exists (id=%d) — updating display.", name, cid)
+                log.info("  Card '%s' already exists (id=%d) — updating SQL + display.", name, cid)
                 client.put(f"/card/{cid}", {
                     "display": display,
                     "visualization_settings": visualization_settings or {},
+                    "dataset_query": {
+                        "type": "native",
+                        "database": db_id,
+                        "native": {"query": sql},
+                    },
                 })
                 return cid
     payload = {
