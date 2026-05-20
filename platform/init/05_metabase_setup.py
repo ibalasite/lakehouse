@@ -596,10 +596,14 @@ def _create_realtime_dashboard(
 
     log.info("Creating real-time dashboard '%s' …", dash_name)
     r = client.post("/dashboard", {
-        "name": dash_name,
+        "name":        dash_name,
         "description": "每15分鐘自動更新的即時問題單看板（來源：cache_ticket_hourly）",
         "collection_id": collection_id,
         "parameters": [],
+        # cache_ttl (seconds): keeps query results for at most 900 s so the
+        # browser auto-refresh at ?refresh=900 always pulls data ≤15 min old.
+        # Ignored gracefully on open-source Metabase; respected on Pro/Enterprise.
+        "cache_ttl": 900,
     })
     client._raise(r, f"POST /dashboard ({dash_name})")
     dash_id = r.json()["id"]
@@ -675,13 +679,17 @@ def main() -> None:
     rt_dash_id = _create_realtime_dashboard(client, collection_id, rt_card_ids)
 
     # 9. Print summary
-    dash_url = f"{args.metabase_url.rstrip('/')}/dashboard/{dash_id}"
-    rt_dash_url = f"{args.metabase_url.rstrip('/')}/dashboard/{rt_dash_id}"
+    base = args.metabase_url.rstrip("/")
+    dash_url    = f"{base}/dashboard/{dash_id}"
+    # ?refresh=900 tells Metabase's client-side timer to reload the dashboard
+    # every 900 seconds (15 min). Works on all Metabase versions, no plugin needed.
+    rt_dash_url = f"{base}/dashboard/{rt_dash_id}?refresh=900"
     print("\n" + "=" * 60)
     print("  Metabase setup complete!")
     print("=" * 60)
     print(f"  Daily dashboard   : {dash_url}")
-    print(f"  Realtime dashboard: {rt_dash_url}")
+    print(f"  Realtime (auto-refresh every 15 min):")
+    print(f"  {rt_dash_url}")
     print(f"  Login             : {ADMIN_EMAIL} / {ADMIN_PASSWORD}")
     print(f"  Collection        : 問題單分析 (id={collection_id})")
     print(f"  Daily cards       : {len(card_ids)}")
