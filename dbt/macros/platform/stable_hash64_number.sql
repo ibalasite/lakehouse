@@ -16,7 +16,7 @@
 #}
 {% macro stable_hash64_number(input_expr) %}
   bitwise_and(
-    xxhash64(to_utf8(cast(coalesce(cast({{ input_expr }} as varchar), '__null__') as varchar))),
+    from_big_endian_64(xxhash64(to_utf8(cast(coalesce(cast({{ input_expr }} as varchar), '__null__') as varchar)))),
     9223372036854775807
   )
 {% endmacro %}
