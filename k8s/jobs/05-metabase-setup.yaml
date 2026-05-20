@@ -52,6 +52,10 @@ spec:
             - name: MYSQL_PASSWORD
               valueFrom:
                 secretKeyRef: {name: lakehouse-secrets, key: MYSQL_PASSWORD}
+            - name: TRINO_HOST
+              value: trino
+            - name: TRINO_PORT
+              value: "8080"
           volumeMounts:
             - name: scripts
               mountPath: /scripts
