@@ -40,10 +40,10 @@ logging.basicConfig(
 log = logging.getLogger("data_source")
 
 # ── Configuration ─────────────────────────────────────────────────────────────
-LISTEN_PORT   = int(os.environ.get("DATA_SOURCE_PORT",         "8080"))
-INTERVAL_SEC  = int(os.environ.get("DATA_SOURCE_INTERVAL_SEC", "300"))
-MIN_ROWS      = int(os.environ.get("DATA_SOURCE_MIN_ROWS",     "5"))
-MAX_ROWS      = int(os.environ.get("DATA_SOURCE_MAX_ROWS",     "20"))
+LISTEN_PORT   = int(os.environ.get("APP_PORT",              "8080"))
+INTERVAL_SEC  = int(os.environ.get("APP_INTERVAL_SEC",     "300"))
+MIN_ROWS      = int(os.environ.get("APP_MIN_ROWS",         "5"))
+MAX_ROWS      = int(os.environ.get("APP_MAX_ROWS",         "20"))
 
 # ── Thread-safe buffer ────────────────────────────────────────────────────────
 _lock:   threading.Lock = threading.Lock()

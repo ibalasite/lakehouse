@@ -29,6 +29,9 @@ spec:
       labels:
         app: data-source
     spec:
+      # Prevent k8s from injecting DATA_SOURCE_PORT=tcp://... which would
+      # conflict with the app's own DATA_SOURCE_PORT numeric env var.
+      enableServiceLinks: false
       containers:
         - name: data-source
           image: python:3.11-slim
@@ -38,11 +41,11 @@ spec:
               containerPort: 8080
           env:
             # Generate 5–20 rows every 300 s (5 min).
-            - name: DATA_SOURCE_INTERVAL_SEC
+            - name: APP_INTERVAL_SEC
               value: "300"
-            - name: DATA_SOURCE_MIN_ROWS
+            - name: APP_MIN_ROWS
               value: "5"
-            - name: DATA_SOURCE_MAX_ROWS
+            - name: APP_MAX_ROWS
               value: "20"
           volumeMounts:
             - name: app
