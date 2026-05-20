@@ -1,0 +1,126 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: polaris
+  namespace: lakehouse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: polaris
+  template:
+    metadata:
+      labels:
+        app: polaris
+    spec:
+      containers:
+        - name: polaris
+          image: apache/polaris:latest
+          env:
+            - name: POLARIS_REALM
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: POLARIS_REALM}
+            - name: POLARIS_CLIENT_ID
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: POLARIS_CLIENT_ID}
+            - name: POLARIS_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: POLARIS_CLIENT_SECRET}
+            - name: POLARIS_BOOTSTRAP_CREDENTIALS
+              value: "$(POLARIS_REALM),$(POLARIS_CLIENT_ID),$(POLARIS_CLIENT_SECRET)"
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: MINIO_ROOT_USER}
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: MINIO_ROOT_PASSWORD}
+            - name: AWS_REGION
+              value: us-east-1
+            - name: POLARIS_IO_S3_ENDPOINT
+              value: http://minio.lakehouse.svc.cluster.local:9000
+            - name: POLARIS_IO_S3_PATH_STYLE_ACCESS
+              value: "true"
+            - name: AWS_ENDPOINT_URL_STS
+              value: http://minio.lakehouse.svc.cluster.local:9000
+            - name: AWS_ENDPOINT_URL_S3
+              value: http://minio.lakehouse.svc.cluster.local:9000
+            - name: quarkus.http.port
+              value: "8181"
+            - name: polaris.persistence.type
+              value: in-memory
+          ports:
+            - containerPort: 8181
+              name: catalog
+            - containerPort: 8182
+              name: management
+          volumeMounts:
+            - name: polaris-app-config
+              mountPath: /deployments/config
+          readinessProbe:
+            httpGet:
+              path: /q/health
+              port: 8182
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 12
+          livenessProbe:
+            httpGet:
+              path: /q/health
+              port: 8182
+            initialDelaySeconds: 120
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 5
+          resources:
+            requests:
+              memory: 256Mi
+            limits:
+              memory: 600Mi
+
+        - name: scope-proxy
+          image: python:3.11-alpine
+          command: ["python3", "/scripts/proxy.py"]
+          ports:
+            - containerPort: 8183
+              name: proxy
+          volumeMounts:
+            - name: proxy-script
+              mountPath: /scripts
+          readinessProbe:
+            tcpSocket:
+              port: 8183
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+
+      volumes:
+        - name: polaris-app-config
+          configMap:
+            name: polaris-config
+        - name: proxy-script
+          configMap:
+            name: scope-proxy-script
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: polaris
+  namespace: lakehouse
+spec:
+  selector:
+    app: polaris
+  ports:
+    - name: catalog
+      port: 8181
+      targetPort: 8181
+    - name: management
+      port: 8182
+      targetPort: 8182
+    - name: proxy
+      port: 8183
+      targetPort: 8183

@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trino-config
+  namespace: lakehouse
+data:
+  config.properties: |
+    coordinator=true
+    node-scheduler.include-coordinator=true
+    http-server.http.port=8080
+    query.max-memory=1GB
+    query.max-memory-per-node=800MB
+    query.max-execution-time=30m
+    query.max-run-time=60m
+    discovery.uri=http://localhost:8080
+
+  jvm.config: |
+    -server
+    -Xmx1250m
+    -XX:InitialRAMPercentage=30
+    -XX:MaxRAMPercentage=75
+    -XX:G1HeapRegionSize=16M
+    -XX:+ExplicitGCInvokesConcurrent
+    -XX:+ExitOnOutOfMemoryError
+    -XX:+HeapDumpOnOutOfMemoryError
+    -XX:ReservedCodeCacheSize=256M
+    -Djdk.attach.allowAttachSelf=true
+    -Djdk.nio.maxCachedBufferSize=2000000
+    -Dnetworkaddress.cache.ttl=5
+    -Dnetworkaddress.cache.negative.ttl=0
+
+  node.properties: |
+    node.environment=local
+    node.id=trino-local-01
+    node.data-dir=/data/trino
+
+  log.properties: |
+    io.trino=INFO
+
+  iceberg.properties: |
+    connector.name=iceberg
+    iceberg.catalog.type=rest
+    iceberg.rest-catalog.uri=http://polaris:8183/api/catalog
+    iceberg.rest-catalog.warehouse=lakehouse
+    iceberg.rest-catalog.security=oauth2
+    iceberg.rest-catalog.oauth2.credential=${POLARIS_CLIENT_ID}:${POLARIS_CLIENT_SECRET}
+    iceberg.rest-catalog.vended-credentials-enabled=false
+    iceberg.unique-table-location=true
+    fs.native-s3.enabled=true
+    s3.endpoint=http://minio.lakehouse.svc.cluster.local:9000
+    s3.path-style-access=true
+    s3.region=us-east-1
+    s3.aws-access-key=${MINIO_ROOT_USER}
+    s3.aws-secret-key=${MINIO_ROOT_PASSWORD}
+
+  mysql.properties: |
+    connector.name=mysql
+    connection-url=jdbc:mysql://mysql:3306?serverTimezone=UTC&characterEncoding=utf8mb4
+    connection-user=lakehouse
+    connection-password=${MYSQL_PASSWORD}

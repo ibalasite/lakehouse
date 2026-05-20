@@ -1,0 +1,31 @@
+lakehouse:
+  target: local
+  outputs:
+    local:
+      type: trino
+      method: none
+      host: "{{ env_var('TRINO_HOST', 'localhost') }}"
+      port: 8080
+      database: iceberg
+      schema: raw
+      threads: 4
+      prepared_statements_enabled: false
+    prod:
+      type: trino
+      method: none
+      host: trino
+      port: 8080
+      database: iceberg
+      schema: raw
+      threads: 8
+      prepared_statements_enabled: false
+    mysql_cache:
+      type: trino
+      method: none
+      host: "{{ env_var('TRINO_HOST', 'localhost') }}"
+      port: 8080
+      # Use Trino's MySQL catalog connector for cache writes
+      database: mysql
+      schema: lakehouse_cache
+      threads: 2
+      prepared_statements_enabled: false

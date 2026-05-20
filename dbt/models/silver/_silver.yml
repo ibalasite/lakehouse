@@ -1,0 +1,152 @@
+version: 2
+
+models:
+  - name: stg_silver_tickets
+    description: >
+      Silver layer: cleansed, deduplicated, and conformed customer service
+      ticket records. Incremental merge on prblm_code ensures exactly one
+      current row per ticket, keeping the most recently updated version.
+      Adds human-readable bucket labels and derived flags for BI consumption.
+      SLA: refreshed every 15 minutes. Consumers must not read from bronze directly.
+    config:
+      materialized: incremental
+      incremental_strategy: merge
+      unique_key: prblm_code
+      schema: silver
+    columns:
+      - name: prblm_code
+        description: Ticket business primary key. One row per ticket in silver.
+        tests:
+          - not_null
+          - unique
+      - name: prblm_sysdate
+        description: Ticket creation timestamp.
+        tests:
+          - not_null
+      - name: prblm_updateddate
+        description: Last update timestamp from source system.
+      - name: prblm_donedate
+        description: Resolution timestamp. NULL when ticket is still open.
+      - name: prblm_preassignenddate
+        description: First response timestamp.
+      - name: prblm_preassignbegindate
+        description: Dispatch start timestamp.
+      - name: prblm_status_id
+        description: Ticket status code (1–5).
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2, 3, 4, 5]
+      - name: prblm_source_id
+        description: Contact channel code (1–5).
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2, 3, 4, 5]
+      - name: prblm_class_id
+        description: Customer-facing category (1–20).
+        tests:
+          - not_null
+      - name: prblm_intclass_id
+        description: Internal service category (1–30).
+      - name: prblm_perform_id
+        description: SLA tier code. 1=急件, 2=特急, NULL=一般.
+      - name: prblm_complain_id
+        description: Complaint escalation level (1–3).
+      - name: prblm_processuser
+        description: Assignee employee ID.
+      - name: prblm_doneuser
+        description: Closer employee ID.
+      - name: prblm_sysuser
+        description: Creator employee ID.
+      - name: customer_name_masked
+        description: PII-masked customer name.
+        tests:
+          - not_null
+      - name: usr_pk
+        description: Non-negative INT64 surrogate key for customer (pii_hash of usr_id).
+        tests:
+          - not_null
+      - name: usr_id_masked
+        description: Partially masked member ID.
+      - name: gd_id
+        description: Store or shop identifier.
+      - name: catsub_id
+        description: Product line sub-site ID (1–10).
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+              quote: false
+      - name: supplier_id
+        description: Supplier identifier.
+      - name: prblm_doneatatime
+        description: First-contact resolution flag.
+      - name: prblm_forwarddatetime
+        description: Forward timestamp. NULL when never forwarded.
+      - name: prblm_forwardtype
+        description: Forward destination type code.
+      - name: prblm_notasreason_id
+        description: Complaint root cause code.
+      - name: prblm_notasowndept_id
+        description: Responsible department ID.
+      - name: resolution_hours
+        description: Hours from creation to resolution. NULL when open.
+      - name: response_hours
+        description: Hours from creation to first response. NULL when none recorded.
+      - name: is_resolved
+        description: 1 when ticket is closed with valid non-negative resolution duration.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+      - name: within_sla
+        description: 1 when first response was within the SLA window for this tier.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+      - name: resolution_bucket
+        description: >
+          Human-readable Chinese bucket label for resolution time.
+          Values: 未結案, 24hr內, 24~48hr, 48~72hr, 3~5天, 5~7天, 7~10天, 10~15天, 15天以上.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['未結案', '24hr內', '24~48hr', '48~72hr', '3~5天', '5~7天', '7~10天', '10~15天', '15天以上']
+      - name: response_bucket
+        description: >
+          Human-readable Chinese bucket label for first response time.
+          Values: 未回覆, 4hr內, 4~8hr, 8~12hr, 12~24hr, 24~48hr, 48~72hr, 72hr以上.
+        tests:
+          - not_null
+          - accepted_values:
+              values: ['未回覆', '4hr內', '4~8hr', '8~12hr', '12~24hr', '24~48hr', '48~72hr', '72hr以上']
+      - name: is_complain
+        description: 1 when complaint escalation level is 提升 or 客訴 (prblm_complain_id >= 2).
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+      - name: is_forwarded
+        description: 1 when the ticket was forwarded to another team.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+      - name: prblm_date
+        description: Ticket creation date (DATE cast of prblm_sysdate). Used as partition key in gold facts.
+        tests:
+          - not_null
+      - name: updated_at
+        description: Timestamp when this silver record was last written/merged.
+        tests:
+          - not_null
+      - name: ingested_at
+        description: Source pipeline ingestion timestamp, propagated from bronze.
+        tests:
+          - not_null

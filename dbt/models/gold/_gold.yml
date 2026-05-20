@@ -1,0 +1,256 @@
+version: 2
+
+models:
+
+  # ── Dimension tables ──────────────────────────────────────────────────────
+
+  - name: dim_date
+    description: >
+      Date dimension spanning 2020-01-01 through 2026-12-31. Generated in SQL
+      using Trino's sequence() function — no seed file required. day_of_week_num
+      follows Trino convention: 1=Monday, 7=Sunday.
+    config:
+      materialized: table
+      schema: gold
+    columns:
+      - name: date_sk
+        description: Date surrogate key (DATE type). Primary key.
+        tests:
+          - not_null
+          - unique
+      - name: year
+        description: 4-digit calendar year.
+        tests:
+          - not_null
+      - name: month
+        description: Calendar month (1–12).
+        tests:
+          - not_null
+      - name: day
+        description: Day of month (1–31).
+        tests:
+          - not_null
+      - name: day_of_week_num
+        description: Day of week number per Trino convention (1=Mon … 7=Sun).
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2, 3, 4, 5, 6, 7]
+              quote: false
+      - name: day_of_week_name
+        description: Day of week in Traditional Chinese (週一–週日).
+        tests:
+          - not_null
+      - name: is_weekend
+        description: 1 when Saturday or Sunday; 0 otherwise.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+      - name: year_month
+        description: YYYYMM string (e.g. 202401). Used as a GROUP BY key for monthly reports.
+        tests:
+          - not_null
+      - name: year_quarter
+        description: Year-quarter string in format yyyy-Q (e.g. 2024-1).
+        tests:
+          - not_null
+
+  - name: dim_prblm_status
+    description: >
+      Static lookup for ticket lifecycle status codes.
+      Covers all valid values of prblm_status_id (1–5).
+    config:
+      materialized: table
+      schema: gold
+    columns:
+      - name: prblm_status_id
+        description: Status code primary key (1–5).
+        tests:
+          - not_null
+          - unique
+      - name: status_name_zh
+        description: Status label in Traditional Chinese.
+        tests:
+          - not_null
+      - name: status_name_en
+        description: Status label in English (uppercase snake_case).
+        tests:
+          - not_null
+
+  - name: dim_prblm_source
+    description: >
+      Static lookup for contact channel codes.
+      Covers all valid values of prblm_source_id (1–5).
+    config:
+      materialized: table
+      schema: gold
+    columns:
+      - name: prblm_source_id
+        description: Source channel code primary key (1–5).
+        tests:
+          - not_null
+          - unique
+      - name: source_name_en
+        description: Channel name in English.
+        tests:
+          - not_null
+      - name: source_name_zh
+        description: Channel name in Traditional Chinese.
+        tests:
+          - not_null
+
+  - name: dim_catsub
+    description: >
+      Static lookup for product line sub-site codes.
+      Covers all valid values of catsub_id (1–10).
+    config:
+      materialized: table
+      schema: gold
+    columns:
+      - name: catsub_id
+        description: Product sub-site code primary key (1–10).
+        tests:
+          - not_null
+          - unique
+      - name: product_name
+        description: Product line name in Traditional Chinese.
+        tests:
+          - not_null
+      - name: region
+        description: Region in Traditional Chinese (台灣, 香港).
+        tests:
+          - not_null
+      - name: catsub_code
+        description: Short code used in internal systems and URLs (e.g. shopping_tw).
+        tests:
+          - not_null
+          - unique
+
+  - name: dim_perform
+    description: >
+      Static lookup for SLA tier (perform) codes.
+      prblm_perform_id=99 is a synthetic surrogate for the standard tier
+      (NULL in source). Fact tables coalesce NULL → 99 before joining.
+    config:
+      materialized: table
+      schema: gold
+    columns:
+      - name: prblm_perform_id
+        description: SLA tier code primary key. Values: 1 (急件), 2 (特急), 99 (一般).
+        tests:
+          - not_null
+          - unique
+      - name: perform_name
+        description: SLA tier name in Traditional Chinese.
+        tests:
+          - not_null
+      - name: sla_hours
+        description: SLA response time target in hours (4, 8, or 24).
+        tests:
+          - not_null
+      - name: sla_desc
+        description: Human-readable SLA description.
+        tests:
+          - not_null
+
+  # ── Fact tables ───────────────────────────────────────────────────────────
+
+  - name: fact_ticket_day_wide
+    description: >
+      Gold fact: daily ticket aggregations by five dimension keys.
+      Granularity: one row per (prblm_date, catsub_id, prblm_source_id,
+      prblm_class_id, prblm_perform_id, prblm_status_id).
+      Incremental MERGE — trailing watermark_lookback_days days reprocessed
+      each run to absorb late silver updates.
+      NULL perform_id is coalesced to 99 (一般) before aggregation so every
+      row joins cleanly to dim_perform.
+      SLA: refreshed every 15 minutes.
+    config:
+      materialized: incremental
+      incremental_strategy: merge
+      schema: gold
+    columns:
+      - name: prblm_date
+        description: Ticket creation date. Partition key.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_date')
+              field: date_sk
+      - name: catsub_id
+        description: Product line sub-site code.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_catsub')
+              field: catsub_id
+      - name: prblm_source_id
+        description: Contact channel code.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_prblm_source')
+              field: prblm_source_id
+      - name: prblm_class_id
+        description: Customer-facing category code.
+        tests:
+          - not_null
+      - name: prblm_perform_id
+        description: SLA tier code. 1=急件, 2=特急, 99=一般 (coalesced from NULL).
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_perform')
+              field: prblm_perform_id
+      - name: prblm_status_id
+        description: Ticket lifecycle status code.
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_prblm_status')
+              field: prblm_status_id
+      - name: total_tickets
+        description: Count of tickets in this dimension group for the day.
+        tests:
+          - not_null
+      - name: resolved_tickets
+        description: Count of tickets resolved (is_resolved=1) in this group.
+        tests:
+          - not_null
+      - name: one_shot_resolved
+        description: Count of tickets resolved on first contact (prblm_doneatatime=TRUE).
+        tests:
+          - not_null
+      - name: complain_tickets
+        description: Count of escalated complaint tickets (is_complain=1).
+        tests:
+          - not_null
+      - name: forwarded_tickets
+        description: Count of tickets forwarded to another team (is_forwarded=1).
+        tests:
+          - not_null
+      - name: within_sla_tickets
+        description: Count of tickets whose first response was within the SLA window.
+        tests:
+          - not_null
+      - name: avg_resolution_hours
+        description: >
+          Average hours from creation to resolution for this group.
+          Excludes negative values (data quality guard). NULL when no resolved
+          tickets with valid durations exist in the group.
+      - name: avg_response_hours
+        description: >
+          Average hours from creation to first response.
+          Excludes negative values. NULL when no valid response times exist.
+      - name: pct_resolved
+        description: Percentage of tickets resolved (0–100). NULL when total_tickets=0.
+      - name: pct_within_sla
+        description: Percentage of tickets meeting SLA (0–100). NULL when total_tickets=0.
+      - name: pct_one_shot
+        description: Percentage of tickets resolved on first contact (0–100). NULL when total_tickets=0.
+      - name: updated_at
+        description: Timestamp of last MERGE write for this row.
+        tests:
+          - not_null

@@ -1,0 +1,133 @@
+version: 2
+
+models:
+  - name: stg_bronze_tickets
+    description: >
+      Bronze staging layer for customer service tickets. Append-only incremental
+      load from iceberg.raw.raw_tickets. PII is masked/hashed at this layer.
+      Schema evolves with source via mergeSchema=true; downstream silver layer
+      handles deduplication and conformance.
+    config:
+      materialized: incremental
+      incremental_strategy: append
+      schema: bronze
+    columns:
+      - name: prblm_code
+        description: Ticket business key. Format PRB-YYYY-NNNNNNN.
+        tests:
+          - not_null
+      - name: prblm_sysdate
+        description: Ticket creation timestamp from source system.
+        tests:
+          - not_null
+      - name: prblm_updateddate
+        description: Last update timestamp from source system.
+      - name: prblm_donedate
+        description: Resolution timestamp. NULL when ticket is open.
+      - name: prblm_preassignenddate
+        description: First response timestamp. Used for SLA compliance calculation.
+      - name: prblm_preassignbegindate
+        description: Dispatch start timestamp.
+      - name: prblm_status_id
+        description: Ticket status code (1–5).
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2, 3, 4, 5]
+      - name: prblm_source_id
+        description: Contact channel code (1–5).
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2, 3, 4, 5]
+      - name: prblm_class_id
+        description: Customer-facing category (1–20).
+        tests:
+          - not_null
+      - name: prblm_intclass_id
+        description: Internal service category (1–30).
+      - name: prblm_perform_id
+        description: SLA tier code. 1=急件(8hr), 2=特急(4hr), NULL=一般(24hr).
+        tests:
+          - accepted_values:
+              values: [1, 2]
+              quote: false
+              # NULL is valid (standard tier); accepted_values skips NULLs by default
+      - name: prblm_complain_id
+        description: Complaint escalation level (1–3).
+        tests:
+          - accepted_values:
+              values: [1, 2, 3]
+              quote: false
+      - name: prblm_processuser
+        description: Assignee employee ID.
+      - name: prblm_doneuser
+        description: Closer employee ID.
+      - name: prblm_sysuser
+        description: Creator employee ID.
+      - name: customer_name_masked
+        description: Customer name with PII masked — first character retained, rest replaced with ***.
+        tests:
+          - not_null
+      - name: usr_pk
+        description: >
+          Deterministic non-negative INT64 surrogate key derived from usr_id
+          via pii_hash. Safe for joins and BI tools without exposing raw PII.
+        tests:
+          - not_null
+      - name: usr_id_masked
+        description: Partially masked member ID — first 2 chars + *** + last 2 chars.
+      - name: gd_id
+        description: Store or shop identifier.
+      - name: catsub_id
+        description: Product line sub-site ID (1–10).
+        tests:
+          - not_null
+          - accepted_values:
+              values: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+              quote: false
+      - name: supplier_id
+        description: Supplier identifier.
+      - name: prblm_doneatatime
+        description: First-contact resolution flag (BOOLEAN).
+      - name: prblm_forwarddatetime
+        description: Forward timestamp. NULL when not forwarded.
+      - name: prblm_forwardtype
+        description: Forward destination type code.
+      - name: prblm_notasreason_id
+        description: Complaint root cause code.
+      - name: prblm_notasowndept_id
+        description: Responsible department ID.
+      - name: resolution_hours
+        description: >
+          Hours from ticket creation to resolution (prblm_donedate - prblm_sysdate).
+          NULL when ticket is open. Negative values indicate data quality issues.
+      - name: response_hours
+        description: >
+          Hours from ticket creation to first response (prblm_preassignenddate - prblm_sysdate).
+          NULL when no first response timestamp is recorded.
+      - name: is_resolved
+        description: >
+          1 when the ticket has a valid non-negative resolution_hours; 0 otherwise.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+      - name: within_sla
+        description: >
+          1 when the ticket's first response was within the SLA window for its
+          perform tier; 0 otherwise. SLA windows: 特急=4hr, 急件=8hr, 一般=24hr.
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0, 1]
+              quote: false
+      - name: ingested_at
+        description: Pipeline ingestion timestamp from source.
+        tests:
+          - not_null
+      - name: bronze_created_at
+        description: Timestamp when this bronze record was written.
+        tests:
+          - not_null

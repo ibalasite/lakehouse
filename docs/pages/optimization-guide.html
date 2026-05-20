@@ -1,0 +1,856 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MSTR × Athena × dbt Iceberg 查詢優化指南</title>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+<style>
+:root{--blue:#0f2d5c;--accent:#2563eb;--accent2:#0ea5e9;--warn:#f59e0b;--ok:#10b981;--bg:#f8fafc;--card:#fff;--code:#1e293b;--text:#1e293b;--sub:#64748b}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);line-height:1.7}
+header{background:linear-gradient(135deg,var(--blue) 0%,#1d4ed8 100%);color:#fff;padding:3rem 2rem 2.5rem;text-align:center}
+header h1{font-size:2rem;font-weight:800;margin-bottom:.5rem}
+header p{opacity:.85;font-size:1.05rem;max-width:680px;margin:0 auto}
+.badge{display:inline-block;background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.3);border-radius:99px;padding:.2rem .9rem;font-size:.8rem;margin:.8rem .3rem 0}
+main{max-width:960px;margin:0 auto;padding:2rem 1.5rem 4rem}
+.section-title{font-size:1.5rem;font-weight:700;color:var(--blue);margin:2.5rem 0 1rem;padding-bottom:.5rem;border-bottom:3px solid var(--accent)}
+.step{background:var(--card);border-radius:16px;box-shadow:0 2px 12px rgba(0,0,0,.07);margin-bottom:2rem;overflow:hidden}
+.step-header{display:flex;align-items:center;gap:1rem;padding:1.2rem 1.5rem;background:linear-gradient(90deg,var(--accent) 0%,var(--accent2) 100%);color:#fff}
+.step-num{width:40px;height:40px;border-radius:50%;background:rgba(255,255,255,.25);display:flex;align-items:center;justify-content:center;font-weight:800;font-size:1.1rem;flex-shrink:0}
+.step-header h2{font-size:1.15rem;font-weight:700}
+.step-header p{font-size:.85rem;opacity:.9}
+.step-body{padding:1.5rem}
+.bg-box{background:#eff6ff;border-left:4px solid var(--accent);border-radius:0 8px 8px 0;padding:1rem 1.2rem;margin-bottom:1.2rem;font-size:.9rem}
+.bg-box strong{color:var(--accent);display:block;margin-bottom:.3rem;font-size:.85rem;text-transform:uppercase;letter-spacing:.05em}
+.warn-box{background:#fffbeb;border-left:4px solid var(--warn);border-radius:0 8px 8px 0;padding:1rem 1.2rem;margin-bottom:1.2rem;font-size:.9rem}
+.warn-box strong{color:#b45309;display:block;margin-bottom:.3rem}
+.ok-box{background:#f0fdf4;border-left:4px solid var(--ok);border-radius:0 8px 8px 0;padding:1rem 1.2rem;margin-bottom:1.2rem;font-size:.9rem}
+.ok-box strong{color:#065f46;display:block;margin-bottom:.3rem}
+.diagram{background:#f1f5f9;border-radius:10px;padding:1.2rem;margin:1rem 0;overflow-x:auto}
+pre{background:var(--code);color:#e2e8f0;border-radius:10px;padding:1.2rem;overflow-x:auto;font-size:.82rem;line-height:1.6;margin:1rem 0}
+pre .c{color:#64748b}
+pre .k{color:#7dd3fc}
+pre .s{color:#86efac}
+pre .fn{color:#fbbf24}
+code{font-family:'Cascadia Code','Fira Code',monospace}
+.tag{display:inline-block;border-radius:6px;padding:.15rem .6rem;font-size:.78rem;font-weight:600;margin:.15rem}
+.tag.iceberg{background:#dbeafe;color:#1e40af}
+.tag.dbt{background:#fce7f3;color:#9d174d}
+.tag.athena{background:#d1fae5;color:#065f46}
+.tag.glue{background:#ede9fe;color:#5b21b6}
+ul.steps-list{list-style:none;padding-left:0}
+ul.steps-list li{padding:.4rem 0 .4rem 1.8rem;position:relative;font-size:.9rem}
+ul.steps-list li::before{content:'▶';position:absolute;left:0;color:var(--accent);font-size:.7rem;top:.6rem}
+table{width:100%;border-collapse:collapse;font-size:.88rem;margin:1rem 0}
+th{background:var(--blue);color:#fff;padding:.6rem 1rem;text-align:left}
+td{padding:.6rem 1rem;border-bottom:1px solid #e2e8f0}
+tr:hover td{background:#f8fafc}
+.footer{text-align:center;padding:2rem;color:var(--sub);font-size:.85rem}
+</style>
+</head>
+<body>
+<header>
+  <h1>MSTR × Athena × dbt Iceberg 查詢優化指南</h1>
+  <p>當 MicroStrategy 報表產生 77 條查詢每次都重掃 View Chain，你需要這份操作手冊。</p>
+  <span class="badge">dbt Incremental</span>
+  <span class="badge">Apache Iceberg</span>
+  <span class="badge">Amazon Athena</span>
+  <span class="badge">AWS Glue Catalog</span>
+</header>
+
+<main>
+
+<!-- ── 問題背景 ─────────────────────────────── -->
+<div class="section-title">問題全貌</div>
+<div class="step">
+  <div class="step-header">
+    <div class="step-num">!</div>
+    <div><h2>為什麼 MSTR 報表在 Athena 跑不出來？</h2>
+    <p>先理解根本原因，才能對症下藥</p></div>
+  </div>
+  <div class="step-body">
+    <div class="bg-box"><strong>背景知識：MicroStrategy Group 功能</strong>
+      MSTR 的「Group By Element」或「Custom Group」功能，會把每一個群組條件拆成獨立的 SQL 語句，再由 MSTR 伺服器把結果合併。這份報表有 <strong>77 個群組</strong>，就產生了 77 條 SQL，每條都去掃同一批 View。
+    </div>
+    <div class="diagram">
+      <div class="mermaid">
+graph LR
+  MSTR["🖥 MicroStrategy\nReport Engine"]
+  MSTR -->|"產生 77 條 SQL"| A1["Query 1\n(包包/鞋子)"]
+  MSTR --> A2["Query 2\n(專櫃/藥妝)"]
+  MSTR --> A3["Query 3\n(婦幼玩具)"]
+  MSTR --> AN["... Query 77"]
+  A1 & A2 & A3 & AN -->|每條都全掃| V["mv_case_handling_detail\n(VIEW — 17 個 LEFT JOIN)"]
+  V --> F1["mv_fact_problem_n (VIEW)"]
+  F1 --> T1[("fact_prblm_m\nIceberg Table")]
+  F1 --> T2[("fact_answr\nIceberg Table")]
+  V --> D1["11 個 dim tables"]
+  style V fill:#fee2e2,stroke:#ef4444
+  style F1 fill:#fef3c7,stroke:#f59e0b
+      </div>
+    </div>
+    <div class="warn-box"><strong>⚠ 核心問題</strong>
+      <code>mv_case_handling_detail</code> 是一個 VIEW，沒有預先計算、沒有 partition。77 次查詢 × 17 個 LEFT JOIN × 全表掃描 = Athena timeout 或費用爆炸。
+    </div>
+    <table>
+      <tr><th>指標</th><th>現況</th><th>優化後目標</th></tr>
+      <tr><td>SQL 語句數</td><td>77 條（不能改）</td><td>77 條（不動）</td></tr>
+      <tr><td>每條掃描資料量</td><td>全表（無 partition）</td><td>僅目標日期 partition</td></tr>
+      <tr><td>即時 JOIN 計算</td><td>17 個 LEFT JOIN × 77 次</td><td>0（已預計算）</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- ── STEP 1 ─────────────────────────────── -->
+<div class="section-title">操作步驟</div>
+<div class="step">
+  <div class="step-header">
+    <div class="step-num">1</div>
+    <div><h2>確認 Athena MV 的技術限制</h2>
+    <p>先確認哪些路走不通，避免白工</p></div>
+  </div>
+  <div class="step-body">
+    <div class="bg-box"><strong>背景知識：Athena Iceberg Materialized View</strong>
+      AWS 官方文件明確寫道：<em>"Athena does not support CREATE MATERIALIZED VIEW, REFRESH MATERIALIZED VIEW... To create materialized views, use Apache Spark in Amazon EMR or AWS Glue."</em>（來源：docs.aws.amazon.com/athena/latest/ug/querying-iceberg-gdc-mv.html）<br><br>
+      dbt-athena adapter 也沒有 MV materialization，只有待實作的 Issue #1557。
+    </div>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart TD
+  Q{"想建 Iceberg MV"} -->|"Athena SQL\nCREATE MATERIALIZED VIEW"| X["❌ 不支援\n(Athena 文件明確說明)"]
+  Q -->|"dbt Athena adapter\nmaterialized='materialized_view'"| X2["❌ 尚未實作\n(Issue #1557 pending)"]
+  Q -->|"Glue Spark Job / EMR Spark"| Y["✅ 可建立\n但需要另外維護 Spark Job"]
+  Q -->|"dbt incremental\ntable_type='iceberg'"| Z["✅ 最佳方案\n自動 merge + partition"]
+  style X fill:#fee2e2,stroke:#ef4444
+  style X2 fill:#fee2e2,stroke:#ef4444
+  style Y fill:#fef9c3,stroke:#ca8a04
+  style Z fill:#dcfce7,stroke:#16a34a
+      </div>
+    </div>
+    <div class="ok-box"><strong>✅ 結論</strong>使用 <strong>dbt incremental + Iceberg table</strong>，不需要 Glue MV，不需要 Spark Job，就能達到「增量更新 + partition 加速」。</div>
+  </div>
+</div>
+
+<!-- ── STEP 2 ─────────────────────────────── -->
+<div class="step">
+  <div class="step-header">
+    <div class="step-num">2</div>
+    <div><h2>繪製現有 View Chain 全圖</h2>
+    <p>在動手之前，必須知道每一層的依賴關係</p></div>
+  </div>
+  <div class="step-body">
+    <div class="bg-box"><strong>背景知識：Athena View vs Iceberg Table</strong>
+      Athena 的 VIEW 是「查詢定義的別名」，每次查詢都即時展開執行，沒有任何快取或 partition 效果。Iceberg Table 是真實儲存在 S3 的 Parquet 檔案，支援 partition pruning（只讀目標分區）、time travel、ACID merge。
+    </div>
+    <div class="diagram">
+      <div class="mermaid">
+graph TD
+  subgraph "MSTR 查詢層（不能改）"
+    SQL["RPT_212.sql\n77 條 SELECT"]
+  end
+  subgraph "View 層（可改）"
+    V1["mv_case_handling_detail\n🔴 VIEW — 17 LEFT JOINs"]
+    V2["mv_fact_problem_n\n🟡 VIEW — 2 table JOIN"]
+    V3["mv_product_line_unit (VIEW)"]
+    V4["mv_sales_attribution_map (VIEW)"]
+    V5["mv_dim_problem_source (VIEW)"]
+  end
+  subgraph "prod_sale_gold（Iceberg 底層）"
+    T1[("fact_prblm_m ✅")]
+    T2[("fact_answr ✅")]
+    T3[("dim_supplier ✅")]
+    T4[("dim_prblm_faq ✅")]
+    Tn[("... 10 個 dim tables")]
+  end
+  SQL --> V1
+  SQL --> V4
+  V1 --> V2
+  V1 --> V3
+  V1 --> V5
+  V1 --> T3 & T4 & Tn
+  V2 --> T1 & T2
+  V3 --> T3
+  V4 --> Tn
+  style V1 fill:#fee2e2,stroke:#ef4444,color:#000
+  style V2 fill:#fef3c7,stroke:#f59e0b,color:#000
+      </div>
+    </div>
+    <div class="bg-box"><strong>操作：確認底層表格式</strong>
+      在 Athena 查詢編輯器執行以下語句，確認底層表是否為 Iceberg 格式：
+    </div>
+<pre><code><span class="c">-- 確認 mv_fact_problem_n 底層兩張表的格式</span>
+SHOW TBLPROPERTIES prod_sale_gold.fact_prblm_m;
+<span class="c">-- 看 'table_type' 欄位，應為 'ICEBERG'</span>
+
+SHOW TBLPROPERTIES prod_sale_gold.fact_answr;
+
+<span class="c">-- 確認現有 view 定義</span>
+SHOW CREATE VIEW prod_sale_gold.mv_fact_problem_n;</code></pre>
+  </div>
+</div>
+
+<!-- ── STEP 3 ─────────────────────────────── -->
+<div class="step">
+  <div class="step-header">
+    <div class="step-num">3</div>
+    <div><h2>理解 dbt Materialization 策略</h2>
+    <p>選對 materialization，才能做到增量更新不全表重算</p></div>
+  </div>
+  <div class="step-body">
+    <div class="bg-box"><strong>背景知識：dbt 的四種 Materialization</strong>
+      dbt 提供四種方式將 model 寫入資料庫，針對這個場景，<code>incremental</code> + Iceberg merge 是唯一能做到「不 full refresh、有 partition、有 ACID」的方案。
+    </div>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+  subgraph "dbt Materialization 比較"
+    direction TB
+    V["view\n每次查詢即時展開\n❌ 無快取無partition"]
+    TB["table\n每次 run 全表重建\n⚠ 貴但有partition"]
+    IC["incremental\n只處理新/改資料\n✅ 便宜有partition"]
+    EP["ephemeral\nCTE，無實體\n❌ 無法用"]
+  end
+  style IC fill:#dcfce7,stroke:#16a34a,color:#000
+  style V fill:#fee2e2,stroke:#ef4444,color:#000
+      </div>
+    </div>
+    <div class="bg-box"><strong>背景知識：Iceberg Incremental Strategy — merge</strong>
+      dbt-athena 的 incremental 支援 <code>merge</code> 策略：根據 <code>unique_key</code> 比對，有則 UPDATE，無則 INSERT。底層使用 Iceberg MERGE INTO 語法，只修改有變動的檔案（copy-on-write 或 merge-on-read），不重寫整張表。
+    </div>
+    <div class="diagram">
+      <div class="mermaid">
+sequenceDiagram
+  participant dbt as dbt run
+  participant A as Athena
+  participant S3 as S3 (Iceberg)
+  dbt->>A: SELECT * FROM fact_prblm_m<br/>WHERE prblm_sysdate >= today-3
+  A->>S3: 只掃最近 3 天 partition
+  S3-->>A: 增量資料
+  A->>S3: MERGE INTO mv_case_handling_detail_iceberg<br/>USING incremental_data<br/>ON unique_key MATCH
+  Note over S3: 只寫入有變動的 Parquet files<br/>舊 partition 完全不動
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── STEP 4 ─────────────────────────────── -->
+<div class="step">
+  <div class="step-header">
+    <div class="step-num">4</div>
+    <div><h2>建立 dbt Incremental Iceberg Model</h2>
+    <p>這是核心步驟：把 View 轉成有 partition 的物理表</p></div>
+  </div>
+  <div class="step-body">
+    <div class="bg-box"><strong>背景知識：Iceberg Partition Transform</strong>
+      Iceberg 支援 <code>day(欄位)</code> / <code>month(欄位)</code> / <code>year(欄位)</code> 等 hidden partition，查詢時 Athena 自動 prune（跳過不相關分區）。MSTR 的每條 SQL WHERE 都有日期範圍（如 <code>prblm_sysdate >= '2025-06-21'</code>），partition 後只掃目標日期的資料夾。
+    </div>
+    <div class="diagram">
+      <div class="mermaid">
+graph LR
+  subgraph "無 Partition（現況）"
+    F1["全表掃描\n數千萬筆資料"]
+  end
+  subgraph "有 day Partition（優化後）"
+    P1["2025/06/21/"]
+    P2["2025/06/22/"]
+    P3["2025/06/23/ ← 只讀這幾個"]
+    P4["2025/06/24/"]
+    P5["..."]
+  end
+  Q1["Query WHERE\ndate BETWEEN\n06/21 AND 06/25"] --> F1
+  Q2["Query WHERE\ndate BETWEEN\n06/21 AND 06/25"] -->|Partition Pruning| P3
+  style F1 fill:#fee2e2,stroke:#ef4444,color:#000
+  style P3 fill:#dcfce7,stroke:#16a34a,color:#000
+      </div>
+    </div>
+
+    <p style="margin:.8rem 0 .4rem;font-weight:600">📁 在 dbt project 建立新檔案：<code>models/gold/mv_case_handling_detail.sql</code></p>
+<pre><code><span class="c">-- models/gold/mv_case_handling_detail.sql</span>
+{{ <span class="fn">config</span>(
+    materialized=<span class="s">'incremental'</span>,
+    table_type=<span class="s">'iceberg'</span>,
+    incremental_strategy=<span class="s">'merge'</span>,
+    unique_key=<span class="s">'prblm_code'</span>,
+    partitioned_by=<span class="s">['day(prblm_sysdate)']</span>,
+    format=<span class="s">'parquet'</span>,
+    on_schema_change=<span class="s">'sync_all_columns'</span>
+) }}
+
+<span class="k">SELECT</span>
+  fpm.prblm_code
+, fpm.prblm_sysdate
+, fpm.prblm_blngcode                               <span class="c">AS "RM單號"</span>
+, fpm.usr_id, fpm.gd_id, fpm.catsub_id
+, fpm.prblm_processuser
+, fpm.prblm_preassignenddate
+, fpm.prblm_statusdate, fpm.prblm_donedate
+, fpm.prblm_doneatatime, fpm.prblm_doneuser
+, fpm.prblm_status_id, fpm.prblm_complain_id
+, fpm.prblm_perform_id, fpm.prblm_prtype_id
+, fpm.prblm_source_id, fpm.prblm_intclass_id
+, fpm.prblm_class_id, fpm.supplier_id
+, fpm.prblm_notasreason_id, fpm.prblm_notasowndept_id
+<span class="c">-- 預計算 DATE_DIFF（不再讓每條 MSTR query 即時算）</span>
+, DATE_DIFF(<span class="s">'hour'</span>, fpm.prblm_sysdate, fpm.prblm_donedate)           <span class="k">AS</span> <span class="s">"結案時效"</span>
+, DATE_DIFF(<span class="s">'hour'</span>, fpm.prblm_sysdate, fpm.prblm_preassignenddate)   <span class="k">AS</span> <span class="s">"回覆時效"</span>
+, <span class="k">CASE</span>
+    <span class="k">WHEN</span> DATE_DIFF(<span class="s">'hour'</span>, fpm.prblm_sysdate, fpm.prblm_preassignenddate) <span class="k">&lt;=</span> 4   <span class="k">THEN</span> <span class="s">'4hr內回覆'</span>
+    <span class="k">WHEN</span> DATE_DIFF(<span class="s">'hour'</span>, fpm.prblm_sysdate, fpm.prblm_preassignenddate) <span class="k">&lt;=</span> 8   <span class="k">THEN</span> <span class="s">'4hr~8hr回覆'</span>
+    <span class="k">WHEN</span> DATE_DIFF(<span class="s">'hour'</span>, fpm.prblm_sysdate, fpm.prblm_preassignenddate) <span class="k">&lt;=</span> 24  <span class="k">THEN</span> <span class="s">'8hr~24hr回覆'</span>
+    <span class="k">ELSE</span> <span class="s">'24hr以上回覆'</span> <span class="k">END</span>                                                  <span class="k">AS</span> <span class="s">"回覆時效群組"</span>
+<span class="c">-- 所有 dim join（跟原 view 相同）</span>
+, v1.<span class="s">"子站名稱"</span>, v1.<span class="s">"區域名稱"</span>, v1.<span class="s">"區域編號"</span>
+, dpfq.Quename <span class="k">AS</span> <span class="s">"客服大分類名稱"</span>, dpfq.Quek_id <span class="k">AS</span> <span class="s">"客服大分類編號"</span>
+, dsr.supplier_storeid, dsr.supplier_storename, dsr.supplier_name
+<span class="c">-- ... （其餘欄位照 mv_case_handling_detail view 完整複製）</span>
+<span class="k">FROM</span> prod_sale_gold.fact_prblm_m fpm
+<span class="k">LEFT JOIN</span> prod_sale_gold.fact_answr a      <span class="k">ON</span> fpm.prblm_code = a.answr_prblmcode
+<span class="k">LEFT JOIN</span> prod_sale_gold.mv_product_line_unit v1 <span class="k">ON</span> fpm.catsub_id = v1.<span class="s">"子站編號"</span>
+<span class="k">LEFT JOIN</span> prod_sale_gold.dim_prblm_faq dpfq  <span class="k">ON</span> fpm.prblm_intclass_id = dpfq.Queid
+<span class="k">LEFT JOIN</span> prod_sale_gold.dim_supplier dsr    <span class="k">ON</span> fpm.supplier_id = dsr.supplier_id
+<span class="c">-- ... 其餘 13 個 LEFT JOIN 同 view 定義</span>
+
+{% <span class="k">if</span> is_incremental() %}
+<span class="k">WHERE</span> fpm.prblm_sysdate >= date_add(<span class="s">'day'</span>, -3, current_timestamp)
+<span class="c">-- 往前 3 天：涵蓋補單、狀態更新的資料</span>
+{% <span class="k">endif</span> %}
+</code></pre>
+
+    <p style="margin:.8rem 0 .4rem;font-weight:600">📁 對應 schema.yml：</p>
+<pre><code><span class="c"># models/gold/schema.yml</span>
+models:
+  - name: mv_case_handling_detail
+    description: <span class="s">"客服問題單明細 — 預計算版本，取代同名 View"</span>
+    config:
+      tags: [<span class="s">"gold"</span>, <span class="s">"iceberg"</span>, <span class="s">"daily"</span>]
+    columns:
+      - name: prblm_code
+        description: <span class="s">"問題編號 (unique key)"</span>
+        tests: [unique, not_null]
+</code></pre>
+  </div>
+</div>
+
+<!-- ── STEP 5 ─────────────────────────────── -->
+<div class="step">
+  <div class="step-header">
+    <div class="step-num">5</div>
+    <div><h2>首次執行 Full Load</h2>
+    <p>第一次 run 需要建立完整的歷史資料</p></div>
+  </div>
+  <div class="step-body">
+    <div class="bg-box"><strong>背景知識：--full-refresh flag</strong>
+      dbt incremental model 首次執行時，<code>is_incremental()</code> 回傳 False，所以會全量建表。若之後要強制全表重建（例如 schema 改變），用 <code>--full-refresh</code> flag。正常日常 run 不加這個 flag，只跑增量。
+    </div>
+<pre><code><span class="c"># 首次全量建表（只做一次）</span>
+dbt run --select mv_case_handling_detail --full-refresh
+
+<span class="c"># 驗證資料筆數與原 view 一致</span>
+<span class="c"># 在 Athena 查詢：</span>
+<span class="k">SELECT</span> COUNT(*) <span class="k">FROM</span> prod_sale_gold.mv_case_handling_detail;
+<span class="k">SELECT</span> COUNT(*) <span class="k">FROM</span> &lt;原本的 view&gt;;
+</code></pre>
+    <div class="warn-box"><strong>⚠ 注意</strong>
+      首次 full refresh 會掃所有歷史資料，費用較高，屬一次性成本。之後每日增量 run 只掃 3 天，成本大幅下降。
+    </div>
+  </div>
+</div>
+
+<!-- ── STEP 6 ─────────────────────────────── -->
+<div class="step">
+  <div class="step-header">
+    <div class="step-num">6</div>
+    <div><h2>把舊 View 指向新 Iceberg Table</h2>
+    <p>讓 MSTR SQL 完全不需要修改</p></div>
+  </div>
+  <div class="step-body">
+    <div class="bg-box"><strong>背景知識：為什麼不直接刪 View？</strong>
+      MSTR 的 SQL 寫死了 <code>"mv_case_handling_detail"</code> 這個名稱，不能改。如果 dbt model 建在不同 schema，就需要讓 view 變成一個「thin wrapper」指向新表。如果 dbt model 建在同一 schema（推薦），則可以直接 DROP VIEW，讓 dbt table 使用同名。
+    </div>
+    <div class="diagram">
+      <div class="mermaid">
+flowchart LR
+  subgraph "方案 A：同 Schema（推薦）"
+    A1["dbt model 建表\nprod_sale_gold.mv_case_handling_detail\n(Iceberg Table)"]
+    A2["DROP VIEW prod_sale_gold.mv_case_handling_detail\n（在 dbt run 前執行，或由 dbt 自動 replace）"]
+  end
+  subgraph "方案 B：不同 Schema"
+    B1["dbt model 建表\nanalytics.mv_case_handling_detail_iceberg"]
+    B2["修改原 VIEW 為：\nSELECT * FROM analytics.mv_case_handling_detail_iceberg"]
+  end
+  style A1 fill:#dcfce7,stroke:#16a34a,color:#000
+  style B2 fill:#fef9c3,stroke:#ca8a04,color:#000
+      </div>
+    </div>
+<pre><code><span class="c">-- 方案 A：先在 Athena 刪掉舊 view（dbt run 會自動建同名 table）</span>
+DROP VIEW <span class="k">IF EXISTS</span> prod_sale_gold.mv_case_handling_detail;
+
+<span class="c">-- 執行 dbt（此時 is_incremental() = false，全量建表）</span>
+<span class="c">-- dbt 會在 prod_sale_gold 建立同名 Iceberg Table</span>
+dbt run --select mv_case_handling_detail
+
+<span class="c">-- 方案 B：保留 view 作 thin wrapper</span>
+CREATE OR REPLACE VIEW prod_sale_gold.mv_case_handling_detail AS
+<span class="k">SELECT</span> * <span class="k">FROM</span> analytics.mv_case_handling_detail_iceberg;
+</code></pre>
+  </div>
+</div>
+
+<!-- ── STEP 7 ─────────────────────────────── -->
+<div class="step">
+  <div class="step-header">
+    <div class="step-num">7</div>
+    <div><h2>驗證查詢效果</h2>
+    <p>優化前後的指標對比</p></div>
+  </div>
+  <div class="step-body">
+<pre><code><span class="c">-- 確認 Iceberg partition 有正確建立</span>
+<span class="k">SELECT</span> <span class="fn">partition</span>, row_count, file_count
+<span class="k">FROM</span> prod_sale_gold.<span class="s">"mv_case_handling_detail$partitions"</span>;
+
+<span class="c">-- Athena Console → Query history → Statistics → Data scanned</span>
+<span class="c">-- 優化前：GB 級 | 優化後：MB 級（只掃目標日期 partition）</span>
+
+<span class="c">-- MySQL：確認 EXPLAIN 使用 index</span>
+EXPLAIN <span class="k">SELECT</span> * <span class="k">FROM</span> mv_case_handling_detail
+<span class="k">WHERE</span> prblm_sysdate <span class="k">BETWEEN</span> <span class="s">'2025-06-21'</span> <span class="k">AND</span> <span class="s">'2025-06-26'</span>;
+<span class="c">-- 確認 key 欄位顯示 idx_sysdate，type 為 range</span>
+</code></pre>
+    <div class="ok-box"><strong>✅ 驗收標準</strong>
+      <ul class="steps-list">
+        <li>dbt test：<code>prblm_code</code> unique + not_null 通過（兩套環境）</li>
+        <li>Athena query Data Scanned 從 GB 降到 MB</li>
+        <li>MySQL EXPLAIN type 為 <code>range</code>，非 <code>ALL</code></li>
+        <li>MSTR 報表執行時間明顯縮短</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- ── STEP 8 ─────────────────────────────── -->
+<div class="step">
+  <div class="step-header">
+    <div class="step-num">8</div>
+    <div><h2>Airflow DAG 設計：Athena 先、MySQL 後</h2>
+    <p>你的架構是 Airflow + dbt → Athena/Iceberg → MySQL，DAG 順序至關重要</p></div>
+  </div>
+  <div class="step-body">
+    <div class="bg-box"><strong>背景知識：為什麼 MySQL 必須在 Athena 之後？</strong>
+      MySQL 的 2 年熱資料是從 Athena（或同一批 source 系統）同步而來。Airflow DAG 需要確保 Athena 的 dbt run 完成（Iceberg table 已更新）後，才觸發 MySQL 的 dbt run，避免 MySQL 讀到舊資料。兩個 dbt run 共用同一份 model SQL，只是 target 不同（<code>--target athena</code> vs <code>--target mysql</code>）。
+    </div>
+    <div class="diagram">
+      <div class="mermaid">
+graph LR
+  SRC[("Source Systems\n(上游 ETL)")]
+  SRC --> ATH_RAW[("Athena\nfact_prblm_m\nfact_answr")]
+  SRC --> MY_RAW[("MySQL\nfact_prblm_m\nfact_answr\n(近 2 年)")]
+  ATH_RAW --> T1["① dbt run\n--target athena\nmv_case_handling_detail\n(Iceberg Table)"]
+  MY_RAW --> T2["② dbt run\n--target mysql\nmv_case_handling_detail\n(MySQL Table)"]
+  T1 --> T2
+  T1 --> M1["MSTR 全歷史查詢"]
+  T2 --> M2["MSTR 近 2 年快速查詢"]
+  style T1 fill:#dcfce7,stroke:#16a34a,color:#000
+  style T2 fill:#dbeafe,stroke:#2563eb,color:#000
+      </div>
+    </div>
+    <div class="diagram">
+      <div class="mermaid">
+gantt
+  title Airflow DAG 每日執行時序（UTC+8）
+  dateFormat HH:mm
+  section 上游 ETL
+    Source → Athena fact tables  :done, 01:00, 2h
+    Source → MySQL fact tables   :done, 02:00, 1h
+  section Athena dbt
+    dbt run --target athena      :active, 05:00, 30m
+    dbt test --target athena     :05:30, 10m
+  section MySQL dbt（等 Athena 完成）
+    dbt run --target mysql       :05:40, 15m
+    dbt test --target mysql      :05:55, 5m
+  section MSTR 報表
+    使用者查詢                    :crit, 07:00, 4h
+      </div>
+    </div>
+<pre><code><span class="c"># airflow/dags/mv_case_handling_detail_refresh.py</span>
+<span class="k">from</span> airflow <span class="k">import</span> DAG
+<span class="k">from</span> airflow.operators.bash <span class="k">import</span> BashOperator
+<span class="k">from</span> datetime <span class="k">import</span> datetime, timedelta
+
+<span class="k">with</span> DAG(
+    dag_id=<span class="s">"mv_case_handling_detail_refresh"</span>,
+    schedule_interval=<span class="s">"0 21 * * *"</span>,  <span class="c"># UTC 21:00 = TWN 05:00</span>
+    start_date=datetime(<span class="s">2026</span>, <span class="s">1</span>, <span class="s">1</span>),
+    catchup=<span class="k">False</span>,
+) <span class="k">as</span> dag:
+
+    <span class="c"># ① Athena/Iceberg（先跑）</span>
+    athena_run = BashOperator(
+        task_id=<span class="s">"dbt_athena_run"</span>,
+        bash_command=<span class="s">"dbt run --select mv_case_handling_detail --target athena"</span>,
+    )
+    athena_test = BashOperator(
+        task_id=<span class="s">"dbt_athena_test"</span>,
+        bash_command=<span class="s">"dbt test --select mv_case_handling_detail --target athena"</span>,
+    )
+
+    <span class="c"># ② MySQL（等 Athena 完成後才跑）</span>
+    mysql_run = BashOperator(
+        task_id=<span class="s">"dbt_mysql_run"</span>,
+        bash_command=<span class="s">"dbt run --select mv_case_handling_detail --target mysql"</span>,
+    )
+    mysql_test = BashOperator(
+        task_id=<span class="s">"dbt_mysql_test"</span>,
+        bash_command=<span class="s">"dbt test --select mv_case_handling_detail --target mysql"</span>,
+    )
+
+    <span class="c"># DAG 依賴：Athena 完成後才跑 MySQL</span>
+    athena_run >> athena_test >> mysql_run >> mysql_test
+</code></pre>
+    <p style="margin:.8rem 0 .4rem;font-weight:600">📁 dbt <code>profiles.yml</code>：兩個 target 共用同一份 model</p>
+<pre><code>default:
+  outputs:
+    athena:
+      type: athena
+      s3_staging_dir: s3://your-bucket/athena-results/
+      region_name: ap-northeast-1
+      database: prod_sale_gold
+      schema: prod_sale_gold
+
+    mysql:
+      type: mysql
+      server: your-mysql-host
+      port: 3306
+      database: prod_sale_gold
+      schema: prod_sale_gold
+      username: dbt_user
+      password: <span class="s">"{{ env_var('DBT_MYSQL_PASSWORD') }}"</span>
+
+  target: athena  <span class="c"># 預設跑 Athena</span>
+</code></pre>
+    <div class="warn-box"><strong>⚠ Iceberg Table Maintenance（每週）</strong>
+      Iceberg 的 merge-on-read 會累積 delta files，建議每週 Sunday 02:00 加一個 OPTIMIZE task：<br>
+      <code>OPTIMIZE prod_sale_gold.mv_case_handling_detail REWRITE DATA USING BIN_PACK;</code>
+    </div>
+  </div>
+</div>
+
+<!-- ── 總結 ─────────────────────────────── -->
+<div class="section-title">優化架構總覽</div>
+<div class="step">
+  <div class="step-header">
+    <div class="step-num">★</div>
+    <div><h2>Before vs After</h2><p>完整的架構改變對比</p></div>
+  </div>
+  <div class="step-body">
+    <div class="diagram">
+      <div class="mermaid">
+graph TB
+  subgraph "Before（慢）"
+    M1["MSTR 77 queries"] --> V1["mv_case_handling_detail\n🔴 VIEW"]
+    V1 --> V2["mv_fact_problem_n\n🟡 VIEW"]
+    V2 --> T1b[("fact_prblm_m")] & T2b[("fact_answr")]
+    V1 --> D1["17 dim tables"]
+  end
+  subgraph "After（快）"
+    M2["MSTR 77 queries"] --> T_NEW[("mv_case_handling_detail\n✅ Iceberg Table\nday(prblm_sysdate) partition")]
+    dbt["dbt incremental run\n每日 05:00\n只掃 -3 天"] --> T_NEW
+    T1a[("fact_prblm_m")] & T2a[("fact_answr")] --> dbt
+  end
+  style V1 fill:#fee2e2,stroke:#ef4444,color:#000
+  style T_NEW fill:#dcfce7,stroke:#16a34a,color:#000
+      </div>
+    </div>
+    <table>
+      <tr><th>項目</th><th>Before</th><th>After</th></tr>
+      <tr><td>Athena Data Scanned / query</td><td>GB 級（全表）</td><td>MB 級（partition）</td></tr>
+      <tr><td>即時 JOIN 計算</td><td>17 joins × 77 次</td><td>0（已預計算）</td></tr>
+      <tr><td>dbt 每日更新成本</td><td>—</td><td>掃 3 天增量</td></tr>
+      <tr><td>MSTR SQL 需要修改</td><td>—</td><td><strong>不需要</strong></td></tr>
+    </table>
+    <div style="margin-top:1.2rem;display:flex;gap:.5rem;flex-wrap:wrap">
+      <span class="tag iceberg">Apache Iceberg</span>
+      <span class="tag dbt">dbt incremental</span>
+      <span class="tag athena">Athena Partition Pruning</span>
+      <span class="tag glue">Glue Catalog</span>
+    </div>
+  </div>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════
+     MySQL 同場景方案
+     ═══════════════════════════════════════════════ -->
+<div class="section-title" style="margin-top:3rem">MySQL 同場景方案（2 年歷史資料）</div>
+
+<div class="step">
+  <div class="step-header" style="background:linear-gradient(90deg,#0369a1 0%,#0ea5e9 100%)">
+    <div class="step-num">M</div>
+    <div><h2>MySQL vs Athena/Iceberg：核心差異對照</h2>
+    <p>同樣的思路，不同的工具選擇</p></div>
+  </div>
+  <div class="step-body">
+    <div class="bg-box"><strong>背景知識：MySQL 沒有原生 Materialized View</strong>
+      MySQL 8.0 以前完全沒有 MV；8.0 後也沒有正式 MV 功能（PostgreSQL 才有）。但 MySQL 有 <strong>InnoDB 分區表（PARTITION BY RANGE）</strong> 和完整索引，可以達到類似效果。dbt-mysql adapter 支援 <code>incremental</code> materialization。
+    </div>
+    <div class="diagram">
+      <div class="mermaid">
+graph LR
+  subgraph "Athena + Iceberg"
+    A1["partition_by: day(欄位)\nHidden Transform"]
+    A2["incremental_strategy: merge\nIceberg MERGE INTO"]
+    A3["Data format: Parquet on S3"]
+  end
+  subgraph "MySQL"
+    M1["PARTITION BY RANGE\n(TO_DAYS(欄位))"]
+    M2["incremental_strategy: delete+insert\n或 materialized='table'（資料小）"]
+    M3["Data format: InnoDB on RDS/本機"]
+  end
+  A1 -.->|"等效"| M1
+  A2 -.->|"等效"| M2
+  A3 -.->|"等效"| M3
+      </div>
+    </div>
+    <table>
+      <tr><th>項目</th><th>Athena + Iceberg</th><th>MySQL</th></tr>
+      <tr><td>Partition 語法</td><td><code>partitioned_by=['day(prblm_sysdate)']</code></td><td><code>PARTITION BY RANGE (TO_DAYS(prblm_sysdate))</code></td></tr>
+      <tr><td>增量策略</td><td><code>merge</code>（Iceberg MERGE INTO）</td><td><code>delete+insert</code></td></tr>
+      <tr><td>原生 MV</td><td>❌ 需 Glue API</td><td>❌ MySQL 不支援</td></tr>
+      <tr><td>資料量小時建議</td><td>incremental</td><td><strong>直接 table（全表重建更簡單）</strong></td></tr>
+      <tr><td>查詢加速手段</td><td>Partition pruning（自動）</td><td>B-tree index + Partition pruning</td></tr>
+    </table>
+  </div>
+</div>
+
+<!-- MySQL Step 1 -->
+<div class="step">
+  <div class="step-header" style="background:linear-gradient(90deg,#0369a1 0%,#0ea5e9 100%)">
+    <div class="step-num">M1</div>
+    <div><h2>建立 dbt MySQL Incremental Model</h2>
+    <p>因為資料量小，可先用 table materialization，需要增量再升級</p></div>
+  </div>
+  <div class="step-body">
+    <div class="bg-box"><strong>背景知識：千萬筆資料為何必須用 incremental</strong>
+      2 年歷史 × 千萬筆若每次全量重建，MySQL 需要 10–30 分鐘，遠超 MSTR 報表前的時間窗口。<code>incremental + delete+insert</code> 每次只處理最近 3 天的資料（約數萬筆），幾十秒就完成。兩套環境統一用 incremental，維護方式也完全一致。
+    </div>
+    <div class="diagram">
+      <div class="mermaid">
+sequenceDiagram
+  participant dbt as dbt run（每日）
+  participant MY as MySQL
+  dbt->>MY: DELETE FROM mv_case_handling_detail<br/>WHERE prblm_sysdate >= DATE_SUB(NOW(), INTERVAL 3 DAY)
+  Note over MY: 只刪最近 3 天資料（數萬筆）
+  dbt->>MY: INSERT INTO mv_case_handling_detail<br/>SELECT ... FROM fact_prblm_m<br/>WHERE prblm_sysdate >= DATE_SUB(NOW(), INTERVAL 3 DAY)
+  Note over MY: 重新插入最新 3 天（涵蓋補單/狀態更新）
+  MY-->>dbt: Done（30 秒內）
+      </div>
+    </div>
+    <p style="margin:.8rem 0 .4rem;font-weight:600">📁 <code>models/gold/mv_case_handling_detail.sql</code>（MySQL incremental 版）</p>
+<pre><code><span class="c">-- models/gold/mv_case_handling_detail.sql（MySQL 版）</span>
+{{ <span class="fn">config</span>(
+    materialized=<span class="s">'incremental'</span>,
+    incremental_strategy=<span class="s">'delete+insert'</span>,
+    unique_key=<span class="s">'prblm_code'</span>
+) }}
+
+<span class="k">SELECT</span>
+  fpm.prblm_code
+, fpm.prblm_sysdate
+, fpm.prblm_blngcode
+, TIMESTAMPDIFF(<span class="k">HOUR</span>, fpm.prblm_sysdate, fpm.prblm_donedate)          <span class="k">AS</span> <span class="s">`結案時效`</span>
+, TIMESTAMPDIFF(<span class="k">HOUR</span>, fpm.prblm_sysdate, fpm.prblm_preassignenddate)   <span class="k">AS</span> <span class="s">`回覆時效`</span>
+, <span class="k">CASE</span>
+    <span class="k">WHEN</span> TIMESTAMPDIFF(<span class="k">HOUR</span>, fpm.prblm_sysdate, fpm.prblm_preassignenddate) <span class="k">&lt;=</span> 4   <span class="k">THEN</span> <span class="s">'4hr內回覆'</span>
+    <span class="k">WHEN</span> TIMESTAMPDIFF(<span class="k">HOUR</span>, fpm.prblm_sysdate, fpm.prblm_preassignenddate) <span class="k">&lt;=</span> 8   <span class="k">THEN</span> <span class="s">'4hr~8hr回覆'</span>
+    <span class="k">WHEN</span> TIMESTAMPDIFF(<span class="k">HOUR</span>, fpm.prblm_sysdate, fpm.prblm_preassignenddate) <span class="k">&lt;=</span> 24  <span class="k">THEN</span> <span class="s">'8hr~24hr回覆'</span>
+    <span class="k">ELSE</span> <span class="s">'24hr以上回覆'</span> <span class="k">END</span>                                               <span class="k">AS</span> <span class="s">`回覆時效群組`</span>
+, v1.catzone_name <span class="k">AS</span> <span class="s">`區域名稱`</span>
+, v1.catzone_id   <span class="k">AS</span> <span class="s">`區域編號`</span>
+, dsr.supplier_storeid, dsr.supplier_storename, dsr.supplier_name
+<span class="c">-- ... 其餘欄位同原 view 完整複製</span>
+<span class="k">FROM</span> fact_prblm_m fpm
+<span class="k">LEFT JOIN</span> fact_answr a       <span class="k">ON</span> fpm.prblm_code = a.answr_prblmcode
+<span class="k">LEFT JOIN</span> dim_catzone v1     <span class="k">ON</span> fpm.catzone_id = v1.catzone_id
+<span class="k">LEFT JOIN</span> dim_prblm_faq dpfq <span class="k">ON</span> fpm.prblm_intclass_id = dpfq.Queid
+<span class="k">LEFT JOIN</span> dim_supplier dsr   <span class="k">ON</span> fpm.supplier_id = dsr.supplier_id
+<span class="c">-- ... 其餘 LEFT JOIN</span>
+
+{% <span class="k">if</span> is_incremental() %}
+<span class="k">WHERE</span> fpm.prblm_sysdate >= DATE_SUB(NOW(), <span class="k">INTERVAL</span> 3 <span class="k">DAY</span>)
+<span class="c">-- 涵蓋補單與狀態延遲更新</span>
+{% <span class="k">endif</span> %}
+</code></pre>
+  </div>
+</div>
+
+<!-- MySQL Step 2 -->
+<div class="step">
+  <div class="step-header" style="background:linear-gradient(90deg,#0369a1 0%,#0ea5e9 100%)">
+    <div class="step-num">M2</div>
+    <div><h2>加上 Index 取代 Iceberg Partition Pruning</h2>
+    <p>MySQL 沒有 hidden partition transform，要手動建 index</p></div>
+  </div>
+  <div class="step-body">
+    <div class="bg-box"><strong>背景知識：MySQL B-tree Index vs Iceberg Partition</strong>
+      Iceberg 的 <code>day(欄位)</code> 是檔案層級的實體分區，Athena 直接跳過不相關 S3 資料夾。MySQL 的 B-tree index 掃到目標 leaf node 後直接讀取 row pointer，效果接近但機制不同。針對 MSTR 的日期範圍查詢，在 <code>prblm_sysdate</code> 上加 index 是最有效的手段。
+    </div>
+<pre><code><span class="c">-- dbt run 建表後，立即在 Athena Query Editor 執行：</span>
+<span class="c">-- （或在 dbt post-hook 裡加）</span>
+
+ALTER TABLE mv_case_handling_detail
+  ADD INDEX idx_sysdate       (prblm_sysdate),
+  ADD INDEX idx_status_date   (prblm_status_id, prblm_sysdate),
+  ADD INDEX idx_catsub        (catsub_id),
+  ADD INDEX idx_supplier      (supplier_id);
+
+<span class="c">-- 驗證 Index 有被使用：</span>
+EXPLAIN
+<span class="k">SELECT</span> * <span class="k">FROM</span> mv_case_handling_detail
+<span class="k">WHERE</span> prblm_sysdate <span class="k">BETWEEN</span> <span class="s">'2025-06-21'</span> <span class="k">AND</span> <span class="s">'2025-06-26'</span>
+  <span class="k">AND</span> prblm_prtype_id = 1;
+<span class="c">-- 確認 key 欄位顯示 idx_sysdate，type 為 range</span>
+</code></pre>
+    <div class="diagram">
+      <div class="mermaid">
+graph LR
+  subgraph "無 Index（舊 View）"
+    Q1["WHERE prblm_sysdate\nBETWEEN 06/21 AND 06/26"] --> FULL["Full Table Scan\n掃全部 2 年資料"]
+  end
+  subgraph "有 Index（物理表）"
+    Q2["WHERE prblm_sysdate\nBETWEEN 06/21 AND 06/26"] --> IDX["B-tree Index Scan\n直接定位目標 leaf"]
+    IDX --> ROW["只讀目標 5 天資料"]
+  end
+  style FULL fill:#fee2e2,stroke:#ef4444,color:#000
+  style ROW fill:#dcfce7,stroke:#16a34a,color:#000
+      </div>
+    </div>
+    <div class="ok-box"><strong>dbt post-hook 自動建 Index</strong>
+      可以在 config 裡加 post-hook，讓 dbt run 後自動執行：<br>
+      <code>post_hook=["CREATE INDEX IF NOT EXISTS idx_sysdate ON {{ this }} (prblm_sysdate)"]</code>
+    </div>
+  </div>
+</div>
+
+<!-- MySQL Step 3 -->
+<div class="step">
+  <div class="step-header" style="background:linear-gradient(90deg,#0369a1 0%,#0ea5e9 100%)">
+    <div class="step-num">M3</div>
+    <div><h2>替換 View 並設定排程</h2>
+    <p>MySQL 的 View 替換方式與 Athena 相同</p></div>
+  </div>
+  <div class="step-body">
+<pre><code><span class="c">-- 1. 刪掉舊 view（dbt run 會建同名 table）</span>
+DROP VIEW <span class="k">IF EXISTS</span> mv_case_handling_detail;
+
+<span class="c">-- 2. 首次全量建表</span>
+dbt run --select mv_case_handling_detail --full-refresh
+
+<span class="c">-- 3. 驗證資料筆數</span>
+<span class="k">SELECT</span> COUNT(*), MIN(prblm_sysdate), MAX(prblm_sysdate)
+<span class="k">FROM</span> mv_case_handling_detail;
+
+<span class="c">-- 4. 後續每日排程（crontab 或 Airflow）</span>
+<span class="c">-- 05:00 每天執行：</span>
+<span class="c">-- dbt run --select mv_case_handling_detail</span>
+</code></pre>
+    <div class="diagram">
+      <div class="mermaid">
+gantt
+  title MySQL dbt run（由 Airflow 在 Athena 完成後觸發）
+  dateFormat HH:mm
+  section Athena（先）
+    dbt run --target athena   :done, 05:00, 30m
+    dbt test --target athena  :done, 05:30, 10m
+  section MySQL（後）
+    dbt run --target mysql    :active, 05:40, 15m
+    加 Index post-hook        :05:55, 3m
+  section 使用者
+    MSTR 報表查詢              :crit, 07:00, 4h
+      </div>
+    </div>
+    <div class="ok-box"><strong>✅ MySQL 方案驗收標準</strong>
+      <ul class="steps-list">
+        <li>EXPLAIN 顯示 <code>type: range</code>，key 為 <code>idx_sysdate</code></li>
+        <li>MSTR 77 條查詢各自執行時間 &lt; 5 秒</li>
+        <li>資料筆數與舊 view 一致</li>
+        <li>dbt run 時間 &lt; 1 分鐘（table 模式）</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<!-- MySQL Summary -->
+<div class="step">
+  <div class="step-header" style="background:linear-gradient(90deg,#0369a1 0%,#0ea5e9 100%)">
+    <div class="step-num">★</div>
+    <div><h2>兩套環境統一操作流程</h2>
+    <p>Athena/Iceberg 與 MySQL 的完整對比</p></div>
+  </div>
+  <div class="step-body">
+    <div class="diagram">
+      <div class="mermaid">
+graph TB
+  SRC[("Source Systems\n(上游 ETL 01:00)")]
+  SRC --> ATH_RAW[("Athena Iceberg\nfact_prblm_m\nfact_answr")]
+  SRC --> MY_RAW[("MySQL InnoDB\nfact_prblm_m\nfact_answr\n近 2 年")]
+
+  subgraph "Airflow DAG — 05:00 觸發"
+    direction LR
+    T1["① dbt run\n--target athena\nIceberg merge\nday() partition"]
+    T2["② dbt run\n--target mysql\ndelete+insert\nB-tree index"]
+    T1 -->|Athena 完成後| T2
+  end
+
+  ATH_RAW --> T1
+  MY_RAW --> T2
+  T1 --> ATH_TBL[("mv_case_handling_detail\nIceberg Table\nS3 Parquet")]
+  T2 --> MY_TBL[("mv_case_handling_detail\nMySQL Table\nInnoDB")]
+  ATH_TBL --> MSTR["MSTR\n77 queries"]
+  MY_TBL --> MSTR
+
+  style T1 fill:#dcfce7,stroke:#16a34a,color:#000
+  style T2 fill:#dbeafe,stroke:#2563eb,color:#000
+  style ATH_TBL fill:#dcfce7,stroke:#16a34a,color:#000
+  style MY_TBL fill:#dbeafe,stroke:#2563eb,color:#000
+      </div>
+    </div>
+    <table>
+      <tr><th>步驟</th><th>Athena + Iceberg</th><th>MySQL（下游）</th></tr>
+      <tr><td>1. 確認技術限制</td><td>Athena 不能建 MV</td><td>MySQL 不能建 MV</td></tr>
+      <tr><td>2. dbt config</td><td><code>table_type='iceberg'</code><br><code>incremental_strategy='merge'</code></td><td>省略 table_type<br><code>incremental_strategy='delete+insert'</code></td></tr>
+      <tr><td>3. 分區/索引</td><td><code>partitioned_by=['day(...)']</code></td><td><code>ADD INDEX idx_sysdate (...)</code></td></tr>
+      <tr><td>4. 替換 View</td><td><code>DROP VIEW IF EXISTS ...</code></td><td><code>DROP VIEW IF EXISTS ...</code>（相同）</td></tr>
+      <tr><td>5. 首次建表</td><td><code>dbt run --full-refresh --target athena</code></td><td><code>dbt run --full-refresh --target mysql</code></td></tr>
+      <tr><td>6. Airflow 排程</td><td>DAG task ①：05:00 先跑</td><td>DAG task ②：Athena 完成後跑</td></tr>
+    </table>
+    <div style="margin-top:1.2rem;display:flex;gap:.5rem;flex-wrap:wrap">
+      <span class="tag iceberg">Apache Iceberg</span>
+      <span class="tag dbt">dbt table / incremental</span>
+      <span class="tag athena">Athena Partition Pruning</span>
+      <span class="tag" style="background:#e0f2fe;color:#0369a1">MySQL B-tree Index</span>
+    </div>
+  </div>
+</div>
+
+</main>
+<div class="footer">
+  <p>此文件基於 RPT_212(客服問題單日報) 實際 SQL 分析撰寫 · 2026-05-13</p>
+  <p>技術依據：<a href="https://docs.aws.amazon.com/athena/latest/ug/querying-iceberg-gdc-mv.html" style="color:var(--accent)">AWS Athena Iceberg MV 文件</a> · dbt-athena adapter docs · dbt-mysql adapter docs</p>
+</div>
+
+<script>
+mermaid.initialize({
+  startOnLoad: true,
+  theme: 'base',
+  themeVariables: {
+    primaryColor: '#dbeafe',
+    primaryTextColor: '#1e293b',
+    primaryBorderColor: '#2563eb',
+    lineColor: '#64748b',
+    secondaryColor: '#f0fdf4',
+    tertiaryColor: '#fef9c3'
+  }
+});
+</script>
+</body>
+</html>

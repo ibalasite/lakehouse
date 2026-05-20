@@ -1,0 +1,84 @@
+version: 2
+
+models:
+  - name: cache_ticket_daily
+    description: >
+      Cache layer: daily ticket metrics written to MySQL (lakehouse_cache DB)
+      via Trino's MySQL catalog connector. Covers the trailing 730 days (2 years).
+      Run with: dbt run --select cache_ticket_daily --target mysql_cache
+
+      This model intentionally uses TABLE materialization (full replace on each
+      run) rather than incremental, because MySQL lacks native MERGE support
+      through Trino and the 730-day window is small enough for a full refresh.
+
+      MySQL connection details (configured in Trino's MySQL catalog):
+        host: localhost
+        port: 3306
+        database: lakehouse_cache
+        user: lakehouse
+    config:
+      materialized: table
+      schema: cache
+    columns:
+      - name: date_sk
+        description: Ticket creation date (alias of prblm_date). Partition key for MySQL queries.
+        tests:
+          - not_null
+      - name: catsub_id
+        description: Product line sub-site code (1–10).
+        tests:
+          - not_null
+      - name: prblm_source_id
+        description: Contact channel code (1–5).
+        tests:
+          - not_null
+      - name: prblm_class_id
+        description: Customer-facing category code.
+        tests:
+          - not_null
+      - name: prblm_perform_id
+        description: SLA tier code. 99 represents standard/一般 tier.
+        tests:
+          - not_null
+      - name: prblm_status_id
+        description: Ticket lifecycle status code.
+        tests:
+          - not_null
+      - name: total_tickets
+        description: Count of tickets in this group for the day.
+        tests:
+          - not_null
+      - name: resolved_tickets
+        description: Count of resolved tickets.
+        tests:
+          - not_null
+      - name: one_shot_resolved
+        description: Count of first-contact resolutions.
+        tests:
+          - not_null
+      - name: complain_tickets
+        description: Count of escalated complaint tickets.
+        tests:
+          - not_null
+      - name: forwarded_tickets
+        description: Count of forwarded tickets.
+        tests:
+          - not_null
+      - name: within_sla_tickets
+        description: Count of tickets meeting SLA.
+        tests:
+          - not_null
+      - name: avg_resolution_hours
+        description: Average resolution hours. NULL when no valid data.
+      - name: avg_response_hours
+        description: Average first-response hours. NULL when no valid data.
+      - name: pct_resolved
+        description: Percentage resolved (0–100). NULL when total=0.
+      - name: pct_within_sla
+        description: Percentage within SLA (0–100). NULL when total=0.
+      - name: pct_one_shot
+        description: Percentage first-contact resolved (0–100). NULL when total=0.
+      - name: updated_at
+        description: Row freshness timestamp from the gold fact table.
+        tests:
+          - not_null

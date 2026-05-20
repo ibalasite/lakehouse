@@ -1,0 +1,67 @@
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: polaris-bootstrap
+  namespace: lakehouse
+spec:
+  backoffLimit: 1
+  template:
+    spec:
+      restartPolicy: Never
+      initContainers:
+        - name: wait-minio-init
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until wget -qO- http://minio:9000/minio/health/live >/dev/null 2>&1; do
+                echo "Waiting for minio..."; sleep 5
+              done
+        - name: wait-polaris
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              until wget -qO- http://polaris:8182/q/health 2>&1 | grep -q "UP\|200\|{"; do
+                echo "Waiting for polaris..."; sleep 5
+              done
+              echo "Polaris is up."
+      containers:
+        - name: bootstrap
+          image: python:3.11-slim
+          command:
+            - sh
+            - -c
+            - |
+              pip install --quiet requests
+              python /scripts/bootstrap.py
+          env:
+            - name: POLARIS_CLIENT_ID
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: POLARIS_CLIENT_ID}
+            - name: POLARIS_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: POLARIS_CLIENT_SECRET}
+            - name: POLARIS_CATALOG
+              value: lakehouse
+            - name: POLARIS_MGMT_URL
+              value: http://polaris:8181/api/management/v1
+            - name: POLARIS_CATALOG_URL
+              value: http://polaris:8181/api/catalog/v1
+            - name: POLARIS_IO_S3_ENDPOINT
+              value: http://minio:9000
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+          resources:
+            requests:
+              memory: 128Mi
+            limits:
+              memory: 256Mi
+      volumes:
+        - name: scripts
+          configMap:
+            name: polaris-bootstrap-script

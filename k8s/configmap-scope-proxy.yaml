@@ -1,0 +1,79 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: scope-proxy-script
+  namespace: lakehouse
+data:
+  proxy.py: |
+    #!/usr/bin/env python3
+    """
+    Scope-rewriting HTTP proxy for Polaris.
+    Rewrites scope=catalog -> scope=PRINCIPAL_ROLE:ALL in OAuth2 token requests.
+    All other requests pass through unchanged.
+    Listens on :8183, forwards to localhost:8181 (Polaris).
+    """
+    import sys
+    import http.server
+    import urllib.request
+    import urllib.parse
+
+    UPSTREAM = "http://localhost:8181"
+    PROXY_PORT = 8183
+
+    class ScopeRewriteProxy(http.server.BaseHTTPRequestHandler):
+        def log_message(self, fmt, *args):
+            pass
+
+        def do_POST(self):
+            content_length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(content_length)
+            if "/oauth/tokens" in self.path:
+                try:
+                    params = urllib.parse.parse_qs(body.decode(), keep_blank_values=True)
+                    if "scope" in params:
+                        original = params["scope"][0]
+                        if original not in ("PRINCIPAL_ROLE:ALL",):
+                            params["scope"] = ["PRINCIPAL_ROLE:ALL"]
+                            print(f"[scope-proxy] rewrote scope: {original!r} -> PRINCIPAL_ROLE:ALL", flush=True)
+                    body = urllib.parse.urlencode({k: v[0] for k, v in params.items()}).encode()
+                except Exception as e:
+                    print(f"[scope-proxy] rewrite error: {e}", flush=True)
+            self._forward("POST", body)
+
+        def do_GET(self):
+            self._forward("GET", None)
+
+        def do_HEAD(self):
+            self._forward("HEAD", None)
+
+        def _forward(self, method, body):
+            url = UPSTREAM + self.path
+            headers = {k: v for k, v in self.headers.items()
+                       if k.lower() not in ("host", "content-length")}
+            if body:
+                headers["Content-Length"] = str(len(body))
+            try:
+                req = urllib.request.Request(url, data=body, headers=headers, method=method)
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    self.send_response(resp.status)
+                    for k, v in resp.headers.items():
+                        if k.lower() not in ("transfer-encoding",):
+                            self.send_header(k, v)
+                    self.end_headers()
+                    if method != "HEAD":
+                        self.wfile.write(resp.read())
+            except urllib.error.HTTPError as e:
+                self.send_response(e.code)
+                for k, v in e.headers.items():
+                    if k.lower() not in ("transfer-encoding",):
+                        self.send_header(k, v)
+                self.end_headers()
+                self.wfile.write(e.read())
+            except Exception as e:
+                print(f"[scope-proxy] forward error: {e}", flush=True)
+                self.send_error(502, str(e))
+
+    if __name__ == "__main__":
+        server = http.server.HTTPServer(("0.0.0.0", PROXY_PORT), ScopeRewriteProxy)
+        print(f"[scope-proxy] listening :{PROXY_PORT}, upstream={UPSTREAM}", flush=True)
+        server.serve_forever()

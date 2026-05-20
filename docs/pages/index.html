@@ -1,0 +1,1058 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Local Data Lakehouse — 本地資料湖倉</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/github-dark.min.css">
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <style>
+    :root {
+      --bg-base:      #0d1117;
+      --bg-surface:   #161b22;
+      --bg-elevated:  #1c2128;
+      --bg-hover:     #21262d;
+      --border:       #30363d;
+      --border-muted: #21262d;
+      --text-primary: #e6edf3;
+      --text-muted:   #8b949e;
+      --text-subtle:  #6e7681;
+      --accent-cyan:  #58a6ff;
+      --accent-green: #3fb950;
+      --accent-yellow:#e3b341;
+      --accent-red:   #f85149;
+      --accent-purple:#a371f7;
+      --toc-width:    260px;
+      --font-body:    'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      --font-mono:    'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+      --radius:       6px;
+      --shadow:       0 4px 24px rgba(0,0,0,.4);
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      font-family: var(--font-body);
+      background: var(--bg-base);
+      color: var(--text-primary);
+      font-size: 15px;
+      line-height: 1.7;
+      display: flex;
+      min-height: 100vh;
+    }
+
+    /* ── Sidebar ─────────────────────────────────────────────────── */
+    #toc {
+      position: fixed;
+      top: 0; left: 0; bottom: 0;
+      width: var(--toc-width);
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border);
+      overflow-y: auto;
+      padding: 24px 0 40px;
+      z-index: 100;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
+    }
+
+    #toc::-webkit-scrollbar { width: 4px; }
+    #toc::-webkit-scrollbar-track { background: transparent; }
+    #toc::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    .toc-header {
+      padding: 0 20px 18px;
+      border-bottom: 1px solid var(--border-muted);
+      margin-bottom: 12px;
+    }
+    .toc-header h2 {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .08em;
+      color: var(--text-subtle);
+    }
+    .toc-header .project-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--accent-cyan);
+      margin-bottom: 4px;
+    }
+
+    #toc nav ol { list-style: none; }
+    #toc nav ol li a {
+      display: block;
+      padding: 5px 20px;
+      font-size: 12.5px;
+      color: var(--text-muted);
+      text-decoration: none;
+      border-left: 2px solid transparent;
+      transition: color .15s, border-color .15s, background .15s;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #toc nav ol li a:hover {
+      color: var(--text-primary);
+      background: var(--bg-hover);
+    }
+    #toc nav ol li a.active {
+      color: var(--accent-cyan);
+      border-left-color: var(--accent-cyan);
+      background: rgba(88,166,255,.07);
+    }
+
+    /* ── Main content ────────────────────────────────────────────── */
+    #content {
+      margin-left: var(--toc-width);
+      flex: 1;
+      padding: 48px 56px 80px;
+      max-width: calc(900px + var(--toc-width));
+    }
+
+    /* ── Page title ─────────────────────────────────────────────── */
+    .page-title {
+      padding-bottom: 24px;
+      margin-bottom: 32px;
+      border-bottom: 1px solid var(--border);
+    }
+    .page-title h1 {
+      font-size: 2rem;
+      font-weight: 700;
+      line-height: 1.25;
+      color: var(--text-primary);
+    }
+    .page-title .subtitle {
+      font-size: 1rem;
+      color: var(--text-muted);
+      margin-top: 6px;
+    }
+    .badges { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      font-weight: 500;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+    }
+    .badge.blue   { color: var(--accent-cyan);   border-color: rgba(88,166,255,.3); }
+    .badge.green  { color: var(--accent-green);  border-color: rgba(63,185,80,.3); }
+
+    /* ── Quick start box ────────────────────────────────────────── */
+    .quick-start {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-left: 3px solid var(--accent-cyan);
+      border-radius: var(--radius);
+      padding: 20px 24px;
+      margin-bottom: 40px;
+    }
+    .quick-start h2 {
+      font-size: 13px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .07em;
+      color: var(--accent-cyan);
+      margin-bottom: 14px;
+    }
+    .quick-start .platform-label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-subtle);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin: 12px 0 4px;
+    }
+    .quick-start .platform-label:first-of-type { margin-top: 0; }
+
+    /* ── Section headings ───────────────────────────────────────── */
+    section { margin-bottom: 52px; }
+
+    h2.section-title {
+      font-size: 1.35rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      padding-bottom: 10px;
+      border-bottom: 1px solid var(--border-muted);
+      margin-bottom: 20px;
+      scroll-margin-top: 24px;
+    }
+    h2.section-title .zh {
+      font-size: .85em;
+      color: var(--text-muted);
+      font-weight: 400;
+      margin-left: 8px;
+    }
+
+    h3 {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin: 24px 0 10px;
+    }
+
+    /* ── Paragraphs ─────────────────────────────────────────────── */
+    p {
+      color: var(--text-muted);
+      margin-bottom: 14px;
+    }
+    p strong { color: var(--text-primary); }
+    p a, li a {
+      color: var(--accent-cyan);
+      text-decoration: none;
+    }
+    p a:hover, li a:hover { text-decoration: underline; }
+
+    /* ── Blockquote ─────────────────────────────────────────────── */
+    blockquote {
+      border-left: 3px solid var(--accent-yellow);
+      background: rgba(227,179,65,.06);
+      padding: 12px 18px;
+      border-radius: 0 var(--radius) var(--radius) 0;
+      margin: 16px 0;
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    /* ── Code ───────────────────────────────────────────────────── */
+    code {
+      font-family: var(--font-mono);
+      font-size: .85em;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 1px 6px;
+      color: #e06c75;
+    }
+
+    pre {
+      background: var(--bg-surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 16px 20px;
+      overflow-x: auto;
+      margin: 12px 0 20px;
+      scrollbar-width: thin;
+      scrollbar-color: var(--border) transparent;
+    }
+    pre::-webkit-scrollbar { height: 4px; }
+    pre::-webkit-scrollbar-track { background: transparent; }
+    pre::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    pre code {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      background: none;
+      border: none;
+      padding: 0;
+      color: inherit;
+      border-radius: 0;
+    }
+
+    .code-block-wrap {
+      position: relative;
+    }
+    .code-label {
+      position: absolute;
+      top: 8px; right: 12px;
+      font-size: 11px;
+      color: var(--text-subtle);
+      font-family: var(--font-mono);
+      pointer-events: none;
+    }
+
+    /* ── Tables ─────────────────────────────────────────────────── */
+    .table-wrap { overflow-x: auto; margin: 16px 0 24px; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13.5px;
+    }
+    thead th {
+      background: var(--bg-elevated);
+      color: var(--text-muted);
+      font-weight: 600;
+      text-align: left;
+      padding: 9px 14px;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    tbody tr:nth-child(odd) { background: rgba(255,255,255,.02); }
+    tbody tr:hover { background: var(--bg-hover); }
+    td {
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--border-muted);
+      color: var(--text-muted);
+      vertical-align: top;
+    }
+    td:first-child, td strong { color: var(--text-primary); }
+    td code { font-size: .82em; }
+
+    /* ── Lists ──────────────────────────────────────────────────── */
+    ul, ol {
+      padding-left: 22px;
+      margin-bottom: 14px;
+    }
+    li {
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+    li strong { color: var(--text-primary); }
+    li code { font-size: .82em; }
+
+    /* checklist */
+    ul.checklist { list-style: none; padding-left: 4px; }
+    ul.checklist li { display: flex; gap: 8px; align-items: flex-start; }
+    ul.checklist li::before {
+      content: '☐';
+      color: var(--text-subtle);
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+
+    /* ── Info/note cards ────────────────────────────────────────── */
+    .note {
+      background: rgba(88,166,255,.07);
+      border: 1px solid rgba(88,166,255,.25);
+      border-radius: var(--radius);
+      padding: 14px 18px;
+      margin: 16px 0;
+      font-size: 13.5px;
+      color: var(--text-muted);
+    }
+    .note strong { color: var(--accent-cyan); }
+
+    /* ── Pipeline badge row ─────────────────────────────────────── */
+    .pipeline {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      margin: 16px 0 20px;
+      font-size: 13px;
+      font-family: var(--font-mono);
+    }
+    .pipe-node {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 4px 12px;
+      color: var(--accent-cyan);
+    }
+    .pipe-arrow { color: var(--text-subtle); font-size: 16px; }
+
+    /* ── Back-to-top ────────────────────────────────────────────── */
+    #back-top {
+      position: fixed;
+      bottom: 32px; right: 32px;
+      width: 40px; height: 40px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer;
+      opacity: 0; pointer-events: none;
+      transition: opacity .2s, background .15s;
+      z-index: 200;
+      color: var(--text-muted);
+      font-size: 16px;
+      text-decoration: none;
+    }
+    #back-top.visible { opacity: 1; pointer-events: auto; }
+    #back-top:hover { background: var(--bg-hover); color: var(--text-primary); }
+
+    /* ── Responsive ─────────────────────────────────────────────── */
+    @media (max-width: 800px) {
+      #toc { display: none; }
+      #content { margin-left: 0; padding: 24px 20px 60px; }
+    }
+
+    /* ── HR ─────────────────────────────────────────────────────── */
+    hr.section-sep {
+      border: none;
+      border-top: 1px solid var(--border-muted);
+      margin: 40px 0;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ─── Sidebar TOC ───────────────────────────────────────────────────────── -->
+<aside id="toc">
+  <div class="toc-header">
+    <div class="project-title">Local Data Lakehouse</div>
+    <h2>Contents</h2>
+  </div>
+  <nav>
+    <ol>
+      <li><a href="#overview">1. Project Overview</a></li>
+      <li><a href="#architecture">2. Architecture</a></li>
+      <li><a href="#prerequisites">3. Prerequisites</a></li>
+      <li><a href="#installation">4. Installation</a></li>
+      <li><a href="#deploy-modes">5. Deploy Modes</a></li>
+      <li><a href="#service-urls">6. Service URLs</a></li>
+      <li><a href="#verifying">7. Verifying the Stack</a></li>
+      <li><a href="#smoke-test">8. E2E Smoke Test</a></li>
+      <li><a href="#airflow-dags">9. Airflow DAGs</a></li>
+      <li><a href="#metabase">10. Metabase Dashboard</a></li>
+      <li><a href="#credentials">11. Credential Management</a></li>
+      <li><a href="#security">12. Security Design</a></li>
+      <li><a href="#env-vars">13. Environment Variables</a></li>
+      <li><a href="#directory">14. Directory Structure</a></li>
+      <li><a href="#troubleshooting">15. Troubleshooting</a></li>
+    </ol>
+  </nav>
+</aside>
+
+<!-- ─── Main ─────────────────────────────────────────────────────────────── -->
+<main id="content">
+
+  <!-- Title -->
+  <div class="page-title">
+    <h1>Local Data Lakehouse<br><span style="font-size:.65em;color:var(--text-muted)">本地資料湖倉</span></h1>
+    <p class="subtitle">A one-click Kubernetes demo of a full BI pipeline<br>
+      一鍵在 Kubernetes 上執行的完整 BI pipeline 示範</p>
+    <div class="badges">
+      <span class="badge blue">platform: k8s k3s</span>
+      <span class="badge blue">Apache Iceberg v2</span>
+      <span class="badge green">license: MIT</span>
+    </div>
+  </div>
+
+  <!-- Quick Start -->
+  <div class="quick-start">
+    <h2>Quick Start / 快速開始</h2>
+    <div class="platform-label">macOS / Linux / WSL2</div>
+<pre><code class="language-bash">bash init_env.sh       # generates .env with fresh random credentials
+./k8s/deploy.sh        # deploys the full stack (~25 min on first run)</code></pre>
+    <div class="platform-label">Windows (PowerShell)</div>
+<pre><code class="language-powershell">.\init_env.ps1         # generates .env with fresh random credentials
+.\k8s\deploy.ps1       # deploys the full stack (~25 min on first run)</code></pre>
+    <p style="margin:12px 0 0;font-size:13.5px;">
+      Then open <a href="http://localhost:30300">http://localhost:30300</a> and log in with the credentials printed by the init script. The <strong>客服問題單日報</strong> dashboard with 5 charts will be ready.
+    </p>
+  </div>
+
+  <!-- ─── 1. Project Overview ─────────────────────────────────────────── -->
+  <section id="overview">
+    <h2 class="section-title">1. Project Overview <span class="zh">專案概覽</span></h2>
+    <p>This repository is a <strong>self-contained local data lakehouse</strong> that demonstrates a production-representative BI pipeline running entirely on a laptop with Rancher Desktop (k3s). It is intended as a reference implementation and learning environment — not a production deployment.</p>
+    <p>本專案是一個<strong>自包含的本地資料湖倉</strong>，展示在筆電上以 Rancher Desktop（k3s）執行的生產代表性 BI pipeline，定位為參考實作與學習環境，非生產部署。</p>
+
+    <div class="pipeline">
+      <span class="pipe-node">MinIO</span><span class="pipe-arrow">→</span>
+      <span class="pipe-node">Iceberg</span><span class="pipe-arrow">→</span>
+      <span class="pipe-node">Polaris</span><span class="pipe-arrow">→</span>
+      <span class="pipe-node">Trino</span><span class="pipe-arrow">→</span>
+      <span class="pipe-node">MySQL</span><span class="pipe-arrow">→</span>
+      <span class="pipe-node">Metabase</span>
+    </div>
+
+    <h3>Pipeline layers / Pipeline 分層</h3>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Layer</th><th>Component</th><th>Role</th></tr></thead>
+      <tbody>
+        <tr><td>Object storage</td><td><strong>MinIO</strong></td><td>S3-compatible store for Iceberg Parquet files</td></tr>
+        <tr><td>Table format</td><td><strong>Apache Iceberg v2</strong></td><td>ACID table management, schema evolution, time travel</td></tr>
+        <tr><td>Catalog</td><td><strong>Apache Polaris</strong></td><td>Iceberg REST catalog with OAuth2 token issuance</td></tr>
+        <tr><td>Query engine</td><td><strong>Trino</strong></td><td>Distributed SQL engine; reads Iceberg, writes MySQL</td></tr>
+        <tr><td>Cache</td><td><strong>MySQL 8.0</strong></td><td>Pre-aggregated metrics tables consumed by Metabase</td></tr>
+        <tr><td>Orchestration</td><td><strong>Apache Airflow</strong></td><td>Scheduled and on-demand DAGs for cache refresh</td></tr>
+        <tr><td>BI</td><td><strong>Metabase</strong></td><td>Dashboard with 5 KPI charts over MySQL cache</td></tr>
+        <tr><td>Platform</td><td><strong>k3s (Rancher Desktop)</strong></td><td>Local Kubernetes with NodePort access</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p><strong>Seed data:</strong> the stack generates ~200,000 rows of synthetic customer support tickets using <code>bulk_load_parquet.py</code> (pyiceberg direct write, bypassing Trino INSERT for speed). The data is purely synthetic — no real user data is included.</p>
+  </section>
+
+  <!-- ─── 2. Architecture ─────────────────────────────────────────────── -->
+  <section id="architecture">
+    <h2 class="section-title">2. Architecture <span class="zh">架構</span></h2>
+    <div class="code-block-wrap">
+<pre><code class="language-text">init_env.sh  →  .env (random credentials)
+     │
+     └──  ./k8s/deploy.sh
+               │
+               ├── Secrets from .env → Kubernetes lakehouse-secrets
+               ├── configmap-trino.yaml (${VAR} substituted by deploy.sh)
+               │
+               ├── MinIO  (S3 API :30900, Console :30901)
+               ├── Apache Polaris  (ClusterIP :8181)
+               ├── Trino  (UI :30080)
+               ├── MySQL  (ClusterIP :3306)
+               ├── Airflow  (UI :30888)
+               └── Metabase  (UI :30300)
+
+               Jobs (run in order):
+               01-minio-init       → creates lakehouse bucket
+               02-polaris-bootstrap → registers catalog + principal
+               04-generate-tickets → bulk_load_parquet.py → Iceberg raw.raw_tickets
+               06-populate-cache   → populate_mysql_cache.py → MySQL cache tables
+               05-metabase-setup   → 05_metabase_setup.py → dashboard + 5 charts</code></pre>
+    </div>
+
+    <h3>Data flow inside Trino / Trino 內部資料流</h3>
+<pre><code class="language-text">Iceberg raw.raw_tickets
+    │  (Trino aggregation SQL)
+    ├──> MySQL lakehouse_cache.cache_ticket_daily   (daily KPIs)
+    └──> MySQL lakehouse_cache.cache_ticket_hourly  (hourly granularity)
+                │
+                └──> Metabase dashboard queries</code></pre>
+  </section>
+
+  <!-- ─── 3. Prerequisites ────────────────────────────────────────────── -->
+  <section id="prerequisites">
+    <h2 class="section-title">3. Prerequisites <span class="zh">前置需求</span></h2>
+
+    <h3>macOS / Linux</h3>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Requirement</th><th>Minimum</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Rancher Desktop</strong></td><td>1.13+</td><td>Provides k3s + container runtime</td></tr>
+        <tr><td><strong>kubectl</strong></td><td>1.28+</td><td>Bundled with Rancher Desktop</td></tr>
+        <tr><td><strong>Python</strong></td><td>3.9+</td><td>For init scripts and smoke test</td></tr>
+        <tr><td><strong>openssl</strong></td><td>any</td><td>Used by <code>init_env.sh</code> for random bytes</td></tr>
+        <tr><td><strong>cryptography (Python)</strong></td><td>any</td><td>For Fernet key generation</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h3>Windows (Native — no WSL2 needed)</h3>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Requirement</th><th>Minimum</th><th>Notes</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Rancher Desktop</strong></td><td>1.13+</td><td>Download from rancherdesktop.io; includes kubectl</td></tr>
+        <tr><td><strong>Python</strong></td><td>3.9+</td><td>Download from python.org; add to PATH during install</td></tr>
+        <tr><td><strong>PowerShell</strong></td><td>5.1+</td><td>Built into Windows 10/11; scripts use <code>.ps1</code></td></tr>
+      </tbody>
+    </table>
+    </div>
+    <blockquote><strong>PowerShell execution policy:</strong> Run once as Administrator if needed:
+<pre style="margin:8px 0 0;background:transparent;border:none;padding:0"><code class="language-powershell">Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser</code></pre>
+    </blockquote>
+
+    <h3>Windows (WSL2 option)</h3>
+    <p>Install <a href="https://learn.microsoft.com/windows/wsl/install">WSL2</a> with Ubuntu, then use the same bash scripts as macOS/Linux inside the Ubuntu terminal. Rancher Desktop must also be installed on the Windows host. kubectl context is automatically shared to WSL2.</p>
+
+    <h3>Hardware / 硬體</h3>
+    <ul>
+      <li>CPU: 4 cores allocated to the Rancher Desktop VM</li>
+      <li>RAM: 8 GB allocated to the Rancher Desktop VM (10 GB recommended)</li>
+      <li>Disk: 20 GB free (container images + Iceberg data)</li>
+    </ul>
+
+    <h3>Python packages / Python 套件</h3>
+<pre><code class="language-bash"># macOS/Linux/WSL2
+pip install 'pyiceberg[s3]' pyarrow mysql-connector-python requests numpy
+
+# Windows (PowerShell)
+pip install pyiceberg[s3] pyarrow mysql-connector-python requests numpy</code></pre>
+
+    <h3>Verify Rancher Desktop is ready / 確認 Rancher Desktop 就緒</h3>
+<pre><code class="language-bash">kubectl config current-context   # should print: rancher-desktop
+kubectl get nodes                 # should show a node in Ready state</code></pre>
+  </section>
+
+  <!-- ─── 4. Installation ─────────────────────────────────────────────── -->
+  <section id="installation">
+    <h2 class="section-title">4. Installation <span class="zh">安裝</span></h2>
+
+    <h3>Step 1: Clone and generate credentials / 步驟 1：Clone 並產生憑證</h3>
+    <p><strong>macOS / Linux / WSL2:</strong></p>
+<pre><code class="language-bash">git clone &lt;repo-url&gt; lakehouse
+cd lakehouse
+bash init_env.sh</code></pre>
+    <p><strong>Windows (PowerShell):</strong></p>
+<pre><code class="language-powershell">git clone &lt;repo-url&gt; lakehouse
+cd lakehouse
+.\init_env.ps1</code></pre>
+
+    <p>Both scripts generate a completely fresh set of cryptographically random credentials and write them to <code>.env</code>. The file is listed in <code>.gitignore</code> and is never committed. The scripts print a credential summary table.</p>
+    <p>兩個腳本都會產生全新加密隨機憑證並寫入 <code>.env</code>，腳本會列印各服務的登入摘要。</p>
+
+    <p>Expected output / 預期輸出：</p>
+<pre><code class="language-text">╔══════════════════════════════════════════════════════╗
+║  Service credentials (valid for this deployment)     ║
+╠══════════════════════════════════════════════════════╣
+║  MinIO Console  http://localhost:30901
+║    user: minio_a3f2b1c4
+║    pass: &lt;24-char random&gt;
+╠══════════════════════════════════════════════════════╣
+║  Airflow        http://localhost:30888
+║    user: admin
+║    pass: &lt;20-char random&gt;
+╠══════════════════════════════════════════════════════╣
+║  Metabase       http://localhost:30300
+║    user: admin@local.com
+║    pass: &lt;20-char random&gt;
+╚══════════════════════════════════════════════════════╝</code></pre>
+
+    <h3>Step 2: Deploy the stack / 步驟 2：部署堆疊</h3>
+    <p><strong>macOS / Linux / WSL2:</strong></p>
+<pre><code class="language-bash">./k8s/deploy.sh</code></pre>
+    <p><strong>Windows (PowerShell):</strong></p>
+<pre><code class="language-powershell">.\k8s\deploy.ps1</code></pre>
+
+    <p>The script performs these steps in order / 腳本依序執行：</p>
+    <ol>
+      <li>Verifies kubectl can reach the <code>rancher-desktop</code> context</li>
+      <li>Creates the <code>lakehouse</code> namespace</li>
+      <li>Creates <code>lakehouse-secrets</code> from <code>.env</code> (no secret YAML committed to the repo)</li>
+      <li>Applies PVCs and ConfigMaps; substitutes <code>${VAR}</code> placeholders in <code>configmap-trino.yaml</code></li>
+      <li>Deploys MinIO, MySQL, PostgreSQL, Apache Polaris</li>
+      <li>Waits for each deployment to become <code>Available</code> before proceeding</li>
+      <li>Runs <code>01-minio-init</code> job: creates the <code>lakehouse</code> bucket</li>
+      <li>Runs <code>02-polaris-bootstrap</code> job: registers the Iceberg catalog and <code>trino-svc</code> principal</li>
+      <li>Deploys Trino</li>
+      <li>Runs <code>04-generate-tickets</code> job: writes synthetic Iceberg data via <code>bulk_load_parquet.py</code></li>
+      <li>Deploys Airflow (webserver + scheduler)</li>
+      <li>Deploys Metabase, then runs <code>05-metabase-setup</code> job to create the dashboard and 5 chart cards</li>
+      <li>Prints the service URL summary</li>
+    </ol>
+
+    <h3>Watch deployment progress / 觀察部署進度</h3>
+<pre><code class="language-bash">kubectl -n lakehouse get pods -w</code></pre>
+
+    <h3>Check individual job logs / 查看個別 Job 日誌</h3>
+<pre><code class="language-bash">kubectl -n lakehouse logs job/minio-init -f
+kubectl -n lakehouse logs job/polaris-bootstrap -f
+kubectl -n lakehouse logs job/generate-tickets -f
+kubectl -n lakehouse logs job/metabase-setup -f</code></pre>
+
+    <h3>Expected final pod state / 最終 Pod 預期狀態</h3>
+<pre><code class="language-text">NAME                          READY   STATUS      RESTARTS
+airflow-scheduler-*           1/1     Running     0
+airflow-webserver-*           1/1     Running     0
+metabase-*                    1/1     Running     0
+minio-*                       1/1     Running     0
+mysql-*                       1/1     Running     0
+polaris-*                     2/2     Running     0
+postgres-*                    1/1     Running     0
+trino-*                       1/1     Running     0
+generate-tickets-*            0/1     Completed   0
+metabase-setup-*              0/1     Completed   0
+minio-init-*                  0/1     Completed   0
+polaris-bootstrap-*           0/1     Completed   0</code></pre>
+  </section>
+
+  <!-- ─── 5. Deploy Modes ─────────────────────────────────────────────── -->
+  <section id="deploy-modes">
+    <h2 class="section-title">5. Deploy Modes <span class="zh">部署模式</span></h2>
+    <p><code>deploy.sh</code> / <code>deploy.ps1</code> support three operating modes. Run <code>bash init_env.sh</code> (or <code>.\init_env.ps1</code>) before any of them to ensure <code>.env</code> is current.</p>
+
+    <h3>Default restart / 預設重啟</h3>
+<pre><code class="language-bash">bash init_env.sh
+./k8s/deploy.sh</code></pre>
+    <p>Reads <code>.env</code>, applies Kubernetes secrets, and redeploys all components. Passwords change on every deploy. <strong>PVC data is preserved</strong> — existing Iceberg files and MySQL tables remain intact. Use this for routine restarts after a laptop reboot.</p>
+
+    <h3>Skip seed data / 跳過種子資料</h3>
+<pre><code class="language-bash">./k8s/deploy.sh --skip-seed</code></pre>
+    <p>Skips the <code>04-generate-tickets</code> job. Use this when Iceberg data already exists in the PVC and you only need to redeploy services.</p>
+
+    <h3>Password rotation (preserve data) / 輪換密碼（保留資料）</h3>
+<pre><code class="language-bash">./k8s/deploy.sh --rotate</code></pre>
+    <p>Rotate all credentials and restart stateless services. MySQL and MinIO data are preserved. Internally: regenerates <code>.env</code>, preserves DB root passwords (baked into PVCs), updates the k8s Secret, updates the Trino ConfigMap, runs <code>ALTER USER</code> in MySQL, then rolling-restarts MinIO, Polaris, Trino, Airflow, and Metabase.</p>
+
+    <h3>Full rebuild / 完全重建</h3>
+<pre><code class="language-bash">bash init_env.sh        # optional: generate fresh credentials first
+./k8s/deploy.sh --rebuild</code></pre>
+    <p>Tear down all deployments, PVCs, and jobs, then redeploy from scratch. <strong>All Iceberg and MySQL data is lost.</strong></p>
+  </section>
+
+  <!-- ─── 6. Service URLs ─────────────────────────────────────────────── -->
+  <section id="service-urls">
+    <h2 class="section-title">6. Service URLs <span class="zh">服務位址</span></h2>
+    <p>Services exposed via NodePort are accessible directly on <code>localhost</code>. MySQL and Polaris are ClusterIP-only; use <code>kubectl port-forward</code> to reach them from the host.</p>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Service</th><th>URL</th><th>Auth</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Metabase</strong></td><td><a href="http://localhost:30300">http://localhost:30300</a></td><td><code>admin@local.com</code> / <code>METABASE_ADMIN_PASSWORD</code> from <code>.env</code></td></tr>
+        <tr><td><strong>Airflow</strong></td><td><a href="http://localhost:30888">http://localhost:30888</a></td><td><code>admin</code> / <code>AIRFLOW_ADMIN_PASSWORD</code> from <code>.env</code></td></tr>
+        <tr><td><strong>Trino UI</strong></td><td><a href="http://localhost:30080">http://localhost:30080</a></td><td>No login required</td></tr>
+        <tr><td><strong>MinIO Console</strong></td><td><a href="http://localhost:30901">http://localhost:30901</a></td><td><code>MINIO_ROOT_USER</code> / <code>MINIO_ROOT_PASSWORD</code> from <code>.env</code></td></tr>
+        <tr><td><strong>MinIO S3 API</strong></td><td><a href="http://localhost:30900">http://localhost:30900</a></td><td>S3 API endpoint</td></tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h3>Port-forward for ClusterIP services</h3>
+<pre><code class="language-bash">kubectl -n lakehouse port-forward svc/mysql   3306:3306 &amp;
+kubectl -n lakehouse port-forward svc/polaris 8181:8181 &amp;</code></pre>
+  </section>
+
+  <!-- ─── 7. Verifying the Stack ─────────────────────────────────────── -->
+  <section id="verifying">
+    <h2 class="section-title">7. Verifying the Stack <span class="zh">驗證堆疊</span></h2>
+
+    <h3>Check Iceberg row count via Trino</h3>
+<pre><code class="language-bash">kubectl -n lakehouse exec deployment/trino -- \
+  trino --execute "SELECT COUNT(*) FROM iceberg.raw.raw_tickets" 2&gt;/dev/null | grep -v WARNING</code></pre>
+
+    <h3>Check MySQL cache tables</h3>
+<pre><code class="language-bash">MYSQL_PW=$(grep ^MYSQL_PASSWORD .env | cut -d= -f2)
+kubectl -n lakehouse exec deployment/mysql -- \
+  mysql -ulakehouse -p"${MYSQL_PW}" \
+  -e "SELECT COUNT(*) FROM lakehouse_cache.cache_ticket_daily;"</code></pre>
+
+    <h3>Re-run a failed job</h3>
+<pre><code class="language-bash">kubectl -n lakehouse delete job metabase-setup --ignore-not-found
+kubectl -n lakehouse apply -f k8s/jobs/05-metabase-setup.yaml
+kubectl -n lakehouse wait job/metabase-setup --for=condition=complete --timeout=300s</code></pre>
+  </section>
+
+  <!-- ─── 8. E2E Smoke Test ───────────────────────────────────────────── -->
+  <section id="smoke-test">
+    <h2 class="section-title">8. End-to-End Smoke Test <span class="zh">端對端冒煙測試</span></h2>
+    <p><code>e2e_smoke_test.py</code> validates the entire pipeline from data ingestion to Metabase dashboard query. Run it after a fresh deployment or after any change to confirm everything works end-to-end.</p>
+<pre><code class="language-bash">python3 platform/init/e2e_smoke_test.py</code></pre>
+
+    <p>The test performs these steps in order:</p>
+    <ol>
+      <li><strong>Connectivity check:</strong> verifies all 6 services are reachable</li>
+      <li><strong>Data generation:</strong> writes 500 synthetic ticket rows for today into <code>iceberg.raw.raw_tickets</code> via pyiceberg</li>
+      <li><strong>Airflow trigger:</strong> calls the Airflow REST API to trigger the <code>lakehouse_hourly</code> DAG</li>
+      <li><strong>DAG poll:</strong> polls until the DAG run reaches <code>success</code> or <code>failed</code> (default 600s timeout)</li>
+      <li><strong>MySQL verify:</strong> confirms <code>cache_ticket_hourly</code> contains rows for today's date</li>
+      <li><strong>Metabase verify:</strong> logs in, queries all dashboard card endpoints, confirms rows are returned</li>
+      <li><strong>Summary:</strong> prints <code>PASS</code> or <code>FAIL</code> per step; exits non-zero if any step failed</li>
+    </ol>
+
+    <h3>Options / 選項</h3>
+<pre><code class="language-bash">python3 platform/init/e2e_smoke_test.py --rows 200       # generate 200 rows instead of 500
+python3 platform/init/e2e_smoke_test.py --timeout 900    # allow 900s for Airflow DAG
+python3 platform/init/e2e_smoke_test.py --skip-generate  # skip Iceberg write (use existing data)
+python3 platform/init/e2e_smoke_test.py --skip-airflow   # run cache refresh locally, skip Airflow</code></pre>
+
+    <h3>Example output / 範例輸出</h3>
+<pre><code class="language-text">[PASS] Connectivity: All services reachable
+[PASS] Data generation: 500 rows in 1.3s
+[PASS] Airflow DAG (lakehouse_hourly): final state: success
+[PASS] MySQL hourly cache: 42 rows for today
+[PASS] Metabase dashboard: 318 total rows across cards
+
+All checks passed.
+  Dashboard: http://localhost:30300/dashboard/2</code></pre>
+  </section>
+
+  <!-- ─── 9. Airflow DAGs ─────────────────────────────────────────────── -->
+  <section id="airflow-dags">
+    <h2 class="section-title">9. Airflow DAGs</h2>
+    <p>Three DAGs are deployed automatically. All DAGs read credentials from Kubernetes secrets injected as environment variables — no credentials appear in DAG source code.</p>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>DAG</th><th>File</th><th>Schedule</th><th>Purpose</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><code>lakehouse_daily</code></td>
+          <td><code>pipeline_daily.py</code></td>
+          <td><code>0 2 * * *</code></td>
+          <td>Full daily cache refresh: Trino aggregate → MySQL daily + hourly tables</td>
+        </tr>
+        <tr>
+          <td><code>lakehouse_backfill</code></td>
+          <td><code>pipeline_backfill.py</code></td>
+          <td>Manual trigger only</td>
+          <td>Accepts <code>start_date</code> / <code>end_date</code> conf for historical backfill</td>
+        </tr>
+        <tr>
+          <td><code>lakehouse_hourly</code></td>
+          <td><code>pipeline_hourly.py</code></td>
+          <td>Manual / smoke test</td>
+          <td>Refreshes today's hourly rows; used by <code>e2e_smoke_test.py</code></td>
+        </tr>
+      </tbody>
+    </table>
+    </div>
+
+    <h3>Trigger a DAG manually</h3>
+    <ol>
+      <li>Open <a href="http://localhost:30888">http://localhost:30888</a>, log in as <code>admin</code></li>
+      <li>Find the DAG, toggle it <strong>On</strong></li>
+      <li>Click the <strong>Trigger DAG</strong> button (play icon)</li>
+    </ol>
+
+    <h3>Trigger via CLI</h3>
+<pre><code class="language-bash">AIRFLOW_PW=$(grep ^AIRFLOW_ADMIN_PASSWORD .env | cut -d= -f2)
+curl -s -X POST http://localhost:30888/api/v1/dags/lakehouse_daily/dagRuns \
+  -u "admin:${AIRFLOW_PW}" \
+  -H "Content-Type: application/json" \
+  -d '{}' | python3 -m json.tool</code></pre>
+
+    <h3>Trigger backfill with date range</h3>
+<pre><code class="language-bash">AIRFLOW_PW=$(grep ^AIRFLOW_ADMIN_PASSWORD .env | cut -d= -f2)
+curl -s -X POST http://localhost:30888/api/v1/dags/lakehouse_backfill/dagRuns \
+  -u "admin:${AIRFLOW_PW}" \
+  -H "Content-Type: application/json" \
+  -d '{"conf": {"start_date": "2025-01-01", "end_date": "2025-12-31"}}' \
+  | python3 -m json.tool</code></pre>
+  </section>
+
+  <!-- ─── 10. Metabase Dashboard ─────────────────────────────────────── -->
+  <section id="metabase">
+    <h2 class="section-title">10. Metabase Dashboard <span class="zh">Metabase 儀表板</span></h2>
+    <p><strong>URL:</strong> <a href="http://localhost:30300">http://localhost:30300</a><br>
+    <strong>Login:</strong> <code>admin@local.com</code> / value of <code>METABASE_ADMIN_PASSWORD</code> in <code>.env</code></p>
+    <p>The dashboard <strong>客服問題單日報</strong> contains 5 charts, all querying the MySQL <code>lakehouse_cache</code> database.</p>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Chart</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><strong>Daily ticket volume trend</strong></td><td>Line chart: new tickets per day over the past 90 days</td></tr>
+        <tr><td><strong>Sub-site distribution</strong></td><td>Bar chart: ticket counts grouped by <code>catsub_id</code></td></tr>
+        <tr><td><strong>SLA compliance</strong></td><td>Line chart: <code>pct_within_sla</code> with threshold reference line</td></tr>
+        <tr><td><strong>Complaint ticket ratio</strong></td><td>Trend of <code>complain_tickets / total_tickets</code> over time</td></tr>
+        <tr><td><strong>Avg response &amp; resolution time</strong></td><td>Dual-metric chart: <code>avg_response_hours</code> and <code>avg_resolution_hours</code></td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>If the dashboard is empty or charts show no data, re-run the setup job:</p>
+<pre><code class="language-bash">kubectl -n lakehouse delete job metabase-setup --ignore-not-found
+kubectl -n lakehouse apply -f k8s/jobs/05-metabase-setup.yaml
+kubectl -n lakehouse logs job/metabase-setup -f</code></pre>
+  </section>
+
+  <!-- ─── 11. Credential Management ─────────────────────────────────── -->
+  <section id="credentials">
+    <h2 class="section-title">11. Credential Management <span class="zh">憑證管理</span></h2>
+
+    <h3>How credentials are generated</h3>
+    <p><code>init_env.sh</code> uses three sources of randomness:</p>
+    <ul>
+      <li><code>openssl rand -hex</code> for usernames and hex tokens</li>
+      <li><code>/dev/urandom</code> filtered through <code>tr</code> for alphanumeric passwords</li>
+      <li>Python <code>cryptography.fernet.Fernet.generate_key()</code> for the Airflow Fernet key</li>
+    </ul>
+    <p>Every execution of <code>init_env.sh</code> produces a completely different <code>.env</code>. <strong>There are no static default passwords anywhere in this codebase.</strong></p>
+
+    <h3>How credentials reach services</h3>
+<pre><code class="language-text">.env
+ │
+ ├── kubectl create secret generic lakehouse-secrets --from-env-file=.env
+ │       │
+ │       └── Pod env vars via secretKeyRef in each YAML manifest
+ │
+ └── deploy.sh envsubst → configmap-trino.yaml (${VAR} replaced at deploy time)
+         │
+         └── Trino reads catalog config from the substituted ConfigMap</code></pre>
+
+    <p>No secret values appear in any committed file. Kubernetes YAML files reference <code>secretKeyRef</code> only.</p>
+
+    <h3>Python scripts and the <code>_require_env</code> pattern</h3>
+    <p>All Python init scripts use a hard-fail pattern for reading credentials. <strong><code>os.environ.get("KEY", "default")</code> is explicitly banned</strong> — if a variable is missing, the script raises an error immediately.</p>
+<pre><code class="language-python"># Correct — raises immediately if var is missing
+def _require_env(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise RuntimeError(f"Required env var {name!r} is not set. Run: bash init_env.sh")
+    return value
+
+MYSQL_PASSWORD = _require_env("MYSQL_PASSWORD")           # correct
+MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "changeme")  # WRONG — never do this</code></pre>
+  </section>
+
+  <!-- ─── 12. Security Design ────────────────────────────────────────── -->
+  <section id="security">
+    <h2 class="section-title">12. Security Design <span class="zh">安全設計</span></h2>
+
+    <h3>Principle of least privilege / 最小權限原則</h3>
+    <p><strong>MySQL <code>lakehouse</code> user:</strong></p>
+    <ul>
+      <li><code>lakehouse_cache</code> database: <code>SELECT, INSERT, UPDATE, DELETE</code> only — no DDL.</li>
+      <li><code>metabase</code> database: <code>ALL PRIVILEGES</code> — Metabase requires DDL to manage its own internal schema.</li>
+    </ul>
+    <p><strong>MinIO:</strong> Root credentials are used only for bucket creation during the init job. For production, create per-service access keys with bucket-scoped policies.</p>
+    <p><strong>Apache Polaris:</strong> The <code>trino-svc</code> principal is granted <code>all_access_role</code> scoped to the <code>lakehouse</code> catalog only. Vended credentials are disabled (<code>vended-credentials-enabled=false</code>); Trino accesses MinIO directly.</p>
+    <p><strong>Kubernetes:</strong> No <code>hostPath</code> volumes. Credentials injected via <code>secretKeyRef</code> only. No <code>--privileged</code> containers.</p>
+
+    <h3>Why hardcoded defaults are dangerous</h3>
+    <p>Using <code>os.environ.get("KEY", "hardcoded_default")</code> creates two risks:</p>
+    <ol>
+      <li><strong>Stale credential reuse:</strong> if the env var is missing, the script silently uses the hardcoded value instead of failing.</li>
+      <li><strong>Accidental commit risk:</strong> a developer who copies the pattern may commit a file containing a real-looking default that becomes a permanent secret in git history.</li>
+    </ol>
+
+    <h3>No credentials in git history</h3>
+    <ul>
+      <li><code>.env</code> is in <code>.gitignore</code> and was never committed</li>
+      <li>All Kubernetes YAML files use <code>secretKeyRef</code> — no literal secret values</li>
+      <li><code>configmap-trino.yaml</code> in the repo contains only <code>${VAR}</code> placeholders; real values are substituted at apply time</li>
+      <li>DAG scripts read env vars injected by Kubernetes; no credentials appear in DAG Python source</li>
+    </ul>
+
+    <h3>Production hardening checklist / 生產環境強化清單</h3>
+    <ul class="checklist">
+      <li>Enable TLS on all service endpoints</li>
+      <li>Add Kubernetes NetworkPolicies to restrict inter-pod communication</li>
+      <li>Replace MinIO root credentials with per-service IAM-style access keys</li>
+      <li>Integrate a secrets manager (HashiCorp Vault, AWS Secrets Manager, or equivalent)</li>
+      <li>Replace Metabase embedded H2 with a production PostgreSQL backend</li>
+      <li>Add Kubernetes RBAC policies scoped to the <code>lakehouse</code> namespace</li>
+      <li>Enable Polaris persistent storage (replace in-memory catalog with a database backend)</li>
+      <li>Rotate all credentials before first production run</li>
+    </ul>
+  </section>
+
+  <!-- ─── 13. Environment Variables ─────────────────────────────────── -->
+  <section id="env-vars">
+    <h2 class="section-title">13. Environment Variables <span class="zh">環境變數</span></h2>
+    <p>All variables are generated by <code>init_env.sh</code> / <code>init_env.ps1</code>. You never need to set them manually.</p>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th>Variable</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><code>MINIO_ROOT_USER</code></td><td>MinIO root username (format: <code>minio_&lt;hex&gt;</code>)</td></tr>
+        <tr><td><code>MINIO_ROOT_PASSWORD</code></td><td>MinIO root password (24-char alphanumeric)</td></tr>
+        <tr><td><code>MINIO_BUCKET</code></td><td>Iceberg bucket name (default: <code>lakehouse</code>)</td></tr>
+        <tr><td><code>POLARIS_CLIENT_ID</code></td><td>Polaris OAuth2 client ID (format: <code>polaris_&lt;hex&gt;</code>)</td></tr>
+        <tr><td><code>POLARIS_CLIENT_SECRET</code></td><td>Polaris OAuth2 client secret (32-char alphanumeric)</td></tr>
+        <tr><td><code>POLARIS_CATALOG</code></td><td>Polaris catalog name (default: <code>lakehouse</code>)</td></tr>
+        <tr><td><code>MYSQL_ROOT_PASSWORD</code></td><td>MySQL root password (24-char alphanumeric)</td></tr>
+        <tr><td><code>MYSQL_PASSWORD</code></td><td>MySQL <code>lakehouse</code> user password (24-char alphanumeric)</td></tr>
+        <tr><td><code>POSTGRES_PASSWORD</code></td><td>PostgreSQL password for Airflow metadata DB</td></tr>
+        <tr><td><code>AIRFLOW_ADMIN_PASSWORD</code></td><td>Airflow <code>admin</code> user password</td></tr>
+        <tr><td><code>AIRFLOW__CORE__FERNET_KEY</code></td><td>Fernet key for Airflow connection encryption</td></tr>
+        <tr><td><code>METABASE_ADMIN_PASSWORD</code></td><td>Metabase <code>admin@local.com</code> password</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+
+  <!-- ─── 14. Directory Structure ───────────────────────────────────── -->
+  <section id="directory">
+    <h2 class="section-title">14. Directory Structure <span class="zh">目錄結構</span></h2>
+<pre><code class="language-text">lakehouse/
+├── init_env.sh                          # Step 1: generate .env (macOS/Linux)
+├── init_env.ps1                         # Step 1: generate .env (Windows)
+├── k8s/
+│   ├── deploy.sh                        # Step 2: deploy and orchestrate (macOS/Linux)
+│   ├── deploy.ps1                       # Step 2: deploy and orchestrate (Windows)
+│   ├── namespace.yaml
+│   ├── pvc.yaml
+│   ├── minio.yaml  /  mysql.yaml  /  postgres.yaml
+│   ├── polaris.yaml  /  trino.yaml
+│   ├── airflow.yaml  /  metabase.yaml
+│   ├── configmap-mysql-init.yaml        # MySQL schema DDL (no credentials)
+│   ├── configmap-trino.yaml             # Trino catalog config with ${VAR} placeholders
+│   ├── configmap-polaris.yaml  /  configmap-scope-proxy.yaml
+│   └── jobs/
+│       ├── 01-minio-init.yaml           # Creates lakehouse bucket in MinIO
+│       ├── 02-polaris-bootstrap.yaml    # Registers Iceberg catalog and principal
+│       ├── 04-generate-tickets.yaml     # Runs bulk_load_parquet.py (seed data)
+│       ├── 05-metabase-setup.yaml       # Creates dashboard and 5 chart cards
+│       └── 06-populate-cache.yaml       # Runs populate_mysql_cache.py
+└── platform/
+    ├── airflow/dags/
+    │   ├── pipeline_daily.py            # lakehouse_daily DAG (02:00 UTC daily)
+    │   ├── pipeline_backfill.py         # lakehouse_backfill DAG (manual trigger)
+    │   └── pipeline_hourly.py           # lakehouse_hourly DAG (smoke test / manual)
+    └── init/
+        ├── 02_polaris_bootstrap.py      # Polaris catalog + principal registration
+        ├── bulk_load_parquet.py         # Fast Iceberg writer (~200k–1M rows/sec)
+        ├── populate_mysql_cache.py      # Trino → MySQL aggregation (executemany)
+        ├── 05_metabase_setup.py         # Metabase dashboard creation via REST API
+        └── e2e_smoke_test.py            # End-to-end pipeline verification (6-step)</code></pre>
+
+    <h3>Key file notes</h3>
+    <ul>
+      <li><strong><code>bulk_load_parquet.py</code></strong> writes directly to Iceberg via pyiceberg and MinIO, bypassing Trino INSERT. This achieves approximately 200,000–1,000,000 rows per second on typical laptop hardware, compared to hundreds of rows per second via Trino INSERT VALUES.</li>
+      <li><strong><code>populate_mysql_cache.py</code></strong> runs aggregation SQL on Trino and bulk-inserts into MySQL using <code>executemany</code> with 5,000-row batches. A full backfill typically completes in under 30 seconds.</li>
+      <li><strong><code>configmap-trino.yaml</code></strong> is the only YAML that requires envsubst. It contains <code>${POLARIS_CLIENT_ID}</code>, <code>${POLARIS_CLIENT_SECRET}</code>, <code>${MINIO_ROOT_USER}</code>, and <code>${MINIO_ROOT_PASSWORD}</code> placeholders that <code>deploy.sh</code> substitutes from <code>.env</code> using an inline Python script before applying.</li>
+    </ul>
+  </section>
+
+  <!-- ─── 15. Troubleshooting ────────────────────────────────────────── -->
+  <section id="troubleshooting">
+    <h2 class="section-title">15. Troubleshooting <span class="zh">疑難排解</span></h2>
+
+    <h3>Trino pod OOMKilled</h3>
+    <p>Increase the Rancher Desktop VM memory allocation to at least 8 GB (10 GB recommended) in <strong>Preferences → Virtual Machine → Memory</strong>.</p>
+
+    <h3>Polaris catalog not found after restart</h3>
+    <p>Polaris uses in-memory persistence by default. After a Polaris pod restart, re-run the bootstrap job:</p>
+<pre><code class="language-bash">kubectl -n lakehouse delete job polaris-bootstrap --ignore-not-found
+kubectl -n lakehouse apply -f k8s/jobs/02-polaris-bootstrap.yaml
+kubectl -n lakehouse wait job/polaris-bootstrap --for=condition=complete --timeout=180s</code></pre>
+
+    <h3>Trino cannot connect to MinIO</h3>
+    <p>Trino uses the MinIO ClusterIP (not the hostname <code>minio</code>) to avoid Netty DNS resolution failures caused by the k3s <code>ndots:5</code> search domain. If you modify <code>configmap-trino.yaml</code>, ensure the MinIO endpoint uses the ClusterIP or the full DNS name <code>minio.lakehouse.svc.cluster.local</code>.</p>
+
+    <h3><code>configmap-trino.yaml</code> applied with literal <code>${VAR}</code></h3>
+    <p>This means <code>kubectl apply -f k8s/configmap-trino.yaml</code> was run directly instead of through <code>deploy.sh</code>. Always apply the Trino ConfigMap via <code>deploy.sh</code>, which performs the envsubst substitution first.</p>
+
+    <h3>Metabase dashboard shows no data</h3>
+    <p>Verify the MySQL cache tables have been populated, then re-run the setup job:</p>
+<pre><code class="language-bash">MYSQL_PW=$(grep ^MYSQL_PASSWORD .env | cut -d= -f2)
+kubectl -n lakehouse exec deployment/mysql -- \
+  mysql -ulakehouse -p"${MYSQL_PW}" \
+  -e "SELECT COUNT(*), MAX(date_sk) FROM lakehouse_cache.cache_ticket_daily;"
+
+kubectl -n lakehouse delete job metabase-setup --ignore-not-found
+kubectl -n lakehouse apply -f k8s/jobs/05-metabase-setup.yaml</code></pre>
+
+    <h3><code>e2e_smoke_test.py</code> fails at Airflow step</h3>
+    <p>Ensure the Airflow scheduler has loaded the DAGs. If the scheduler was recently restarted, wait 30 seconds for DAG discovery:</p>
+<pre><code class="language-bash">kubectl -n lakehouse rollout restart deployment/airflow-scheduler
+# wait ~30 seconds, then retry
+python3 platform/init/e2e_smoke_test.py --skip-airflow   # local fallback</code></pre>
+  </section>
+
+  <hr class="section-sep">
+  <p style="font-size:13px;color:var(--text-subtle)">MIT License · Synthetic data only — no real user data included.</p>
+
+</main>
+
+<!-- ─── Back-to-top ──────────────────────────────────────────────────────── -->
+<a id="back-top" href="#" title="Back to top">↑</a>
+
+<script>
+  // ── Syntax highlighting ────────────────────────────────────────────────
+  document.addEventListener('DOMContentLoaded', () => {
+    document.querySelectorAll('pre code').forEach(block => {
+      hljs.highlightElement(block);
+    });
+
+    // ── Active TOC on scroll ─────────────────────────────────────────────
+    const headings  = Array.from(document.querySelectorAll('section[id]'));
+    const tocLinks  = Array.from(document.querySelectorAll('#toc nav a'));
+
+    function setActive() {
+      let current = '';
+      for (const h of headings) {
+        if (h.getBoundingClientRect().top <= 80) current = h.id;
+      }
+      tocLinks.forEach(a => {
+        a.classList.toggle('active', a.getAttribute('href') === '#' + current);
+      });
+    }
+
+    window.addEventListener('scroll', setActive, { passive: true });
+    setActive();
+
+    // ── Back-to-top visibility ───────────────────────────────────────────
+    const btn = document.getElementById('back-top');
+    window.addEventListener('scroll', () => {
+      btn.classList.toggle('visible', window.scrollY > 300);
+    }, { passive: true });
+
+    btn.addEventListener('click', e => {
+      e.preventDefault();
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    });
+  });
+</script>
+</body>
+</html>

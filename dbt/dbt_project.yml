@@ -1,0 +1,44 @@
+name: 'lakehouse'
+version: '1.0.0'
+config-version: 2
+
+profile: 'lakehouse'
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+seed-paths: ["seeds"]
+
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+models:
+  lakehouse:
+    bronze:
+      +materialized: incremental
+      +incremental_strategy: append
+      +on_schema_change: sync_all_columns
+      +properties:
+        format: PARQUET
+      +schema: bronze
+    silver:
+      +materialized: incremental
+      +incremental_strategy: merge
+      +unique_key: prblm_code
+      +schema: silver
+    gold:
+      dims:
+        +materialized: table
+        +schema: gold
+      facts:
+        +materialized: incremental
+        +incremental_strategy: merge
+        +schema: gold
+    cache:
+      +materialized: table
+      +database: mysql
+      +schema: lakehouse_cache
+
+vars:
+  watermark_lookback_days: 3
+  rebuild_from_date: '2020-01-01'

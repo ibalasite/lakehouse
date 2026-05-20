@@ -1,0 +1,232 @@
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: airflow-config
+  namespace: lakehouse
+data:
+  airflow.cfg: |
+    [core]
+    executor = LocalExecutor
+    load_examples = False
+    dags_folder = /opt/airflow/dags
+    [database]
+    sql_alchemy_conn = postgresql+psycopg2://airflow:${POSTGRES_PASSWORD}@postgres:5432/airflow
+    [api]
+    auth_backends = airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session
+    [webserver]
+    base_url = http://localhost:8080
+    web_server_master_timeout = 1200
+    [logging]
+    base_log_folder = /opt/airflow/logs
+---
+# Airflow init Job — runs db migrate + admin user creation once
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: airflow-init
+  namespace: lakehouse
+spec:
+  template:
+    spec:
+      restartPolicy: OnFailure
+      initContainers:
+        - name: wait-postgres
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z postgres 5432; do echo waiting for postgres; sleep 3; done"]
+      containers:
+        - name: airflow-init
+          image: apache/airflow:2.9.1
+          command:
+            - bash
+            - -c
+            - |
+              airflow db migrate
+              airflow users create \
+                --username admin \
+                --password "${AIRFLOW_ADMIN_PASSWORD}" \
+                --firstname Admin \
+                --lastname User \
+                --role Admin \
+                --email admin@local.com || true
+          env:
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN}
+            - name: AIRFLOW__CORE__FERNET_KEY
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: AIRFLOW__CORE__FERNET_KEY}
+            - name: AIRFLOW__CORE__EXECUTOR
+              value: LocalExecutor
+            - name: AIRFLOW__CORE__LOAD_EXAMPLES
+              value: "False"
+            - name: AIRFLOW_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: AIRFLOW_ADMIN_PASSWORD}
+          resources:
+            requests:
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-scheduler
+  namespace: lakehouse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow-scheduler
+  template:
+    metadata:
+      labels:
+        app: airflow-scheduler
+    spec:
+      initContainers:
+        - name: wait-db
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z postgres 5432; do echo waiting; sleep 3; done"]
+      containers:
+        - name: scheduler
+          image: apache/airflow:2.9.1
+          command: ["airflow", "scheduler"]
+          env:
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN}
+            - name: AIRFLOW__CORE__FERNET_KEY
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: AIRFLOW__CORE__FERNET_KEY}
+            - name: AIRFLOW__CORE__EXECUTOR
+              value: LocalExecutor
+            - name: AIRFLOW__CORE__LOAD_EXAMPLES
+              value: "False"
+            - name: TRINO_HOST
+              value: trino
+            - name: TRINO_PORT
+              value: "8080"
+            - name: MYSQL_USER
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: MYSQL_USER}
+            - name: MYSQL_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: MYSQL_PASSWORD}
+            - name: MYSQL_DATABASE
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: MYSQL_DATABASE}
+            - name: METABASE_ADMIN_EMAIL
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: METABASE_ADMIN_EMAIL}
+            - name: METABASE_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: METABASE_ADMIN_PASSWORD}
+          volumeMounts:
+            # Use subPath to avoid ConfigMap symlink recursive-loop in Airflow's DAG scanner
+            - name: dags
+              mountPath: /opt/airflow/dags/pipeline_daily.py
+              subPath: pipeline_daily.py
+            - name: dags
+              mountPath: /opt/airflow/dags/pipeline_backfill.py
+              subPath: pipeline_backfill.py
+            - name: dags
+              mountPath: /opt/airflow/dags/pipeline_hourly.py
+              subPath: pipeline_hourly.py
+          resources:
+            requests:
+              memory: 512Mi
+            limits:
+              memory: 1Gi
+      volumes:
+        - name: dags
+          configMap:
+            name: airflow-dags
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: airflow-webserver
+  namespace: lakehouse
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: airflow-webserver
+  template:
+    metadata:
+      labels:
+        app: airflow-webserver
+    spec:
+      initContainers:
+        - name: wait-db
+          image: busybox:1.36
+          command: ["sh", "-c", "until nc -z postgres 5432; do echo waiting; sleep 3; done"]
+      containers:
+        - name: webserver
+          image: apache/airflow:2.9.1
+          command: ["airflow", "webserver", "--worker-timeout", "600"]
+          env:
+            - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN}
+            - name: AIRFLOW__CORE__FERNET_KEY
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: AIRFLOW__CORE__FERNET_KEY}
+            - name: AIRFLOW__CORE__EXECUTOR
+              value: LocalExecutor
+            - name: AIRFLOW__CORE__LOAD_EXAMPLES
+              value: "False"
+            - name: AIRFLOW__WEBSERVER__BASE_URL
+              value: http://localhost:8080
+            - name: AIRFLOW__WEBSERVER__WORKERS
+              value: "1"
+            - name: AIRFLOW__WEBSERVER__WORKER_REFRESH_INTERVAL
+              value: "0"
+            - name: AIRFLOW__WEBSERVER__WORKER_TIMEOUT
+              value: "600"
+            - name: AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT
+              value: "1200"
+            - name: AIRFLOW__API__AUTH_BACKENDS
+              value: "airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session"
+          ports:
+            - containerPort: 8080
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 60
+            periodSeconds: 15
+            failureThreshold: 20
+          resources:
+            requests:
+              memory: 512Mi
+            limits:
+              memory: 2Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow-webserver
+  namespace: lakehouse
+spec:
+  selector:
+    app: airflow-webserver
+  ports:
+    - port: 8080
+      targetPort: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: airflow-nodeport
+  namespace: lakehouse
+spec:
+  type: NodePort
+  selector:
+    app: airflow-webserver
+  ports:
+    - port: 8080
+      targetPort: 8080
+      nodePort: 30888

@@ -1,0 +1,8 @@
+.DS_Store
+.gstack/
+.playwright-mcp/
+*.png
+View/
+
+# Local environment — never commit real secrets
+.env
