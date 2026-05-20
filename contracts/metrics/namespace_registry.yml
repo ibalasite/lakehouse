@@ -1,0 +1,44 @@
+version: 1
+
+# ── Metric namespace registry ─────────────────────────────────────────────────
+# Defines the source systems and Iceberg namespaces that feed the metric
+# pipeline. Each namespace maps to one Gold fact chain:
+#   raw_table → fact_metric_hour_long → hour_wide → day_wide → month_wide
+# ─────────────────────────────────────────────────────────────────────────────
+
+namespaces:
+
+  - namespace_code: ticket
+    display_name: 問題單
+    source_system: lakehouse
+    iceberg_catalog: iceberg
+    iceberg_namespace: raw
+    source_table: raw_tickets
+    hour_long_table: fact_metric_hour_long
+    description: >
+      Customer service ticket metrics sourced from the raw_tickets Iceberg
+      table. Each row in hour_long represents one metric for one hour slice
+      for one dimension combination.
+    grain:
+      - date_sk
+      - hour
+      - catsub_id
+      - prblm_source_id
+      - prblm_class_id
+      - prblm_perform_id
+      - prblm_status_id
+    dimensions:
+      - name: catsub_id
+        description: Product line sub-site code (1–10).
+        dim_table: dim_catsub
+      - name: prblm_source_id
+        description: Contact channel code (1–5).
+        dim_table: dim_prblm_source
+      - name: prblm_class_id
+        description: Customer-facing category code.
+      - name: prblm_perform_id
+        description: SLA tier code. NULL coalesced to 99 (一般).
+        dim_table: dim_perform
+      - name: prblm_status_id
+        description: Ticket lifecycle status (1–5).
+        dim_table: dim_prblm_status

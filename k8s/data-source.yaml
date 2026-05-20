@@ -1,0 +1,91 @@
+# data-source.yaml
+# ─────────────────────────────────────────────────────────────────────────────
+# Synthetic data source pod.
+#
+# The ConfigMap `data-source-app` is NOT defined here — it is built by
+# deploy.sh from platform/data_source/app.py to avoid duplication:
+#
+#   KC create configmap data-source-app \
+#       --from-file=app.py="$PROJECT_DIR/platform/data_source/app.py" \
+#       --dry-run=client -o yaml | kubectl apply -f -
+#
+# This Deployment + Service pair is applied after that ConfigMap exists.
+# ─────────────────────────────────────────────────────────────────────────────
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-source
+  namespace: lakehouse
+  labels:
+    app: data-source
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: data-source
+  template:
+    metadata:
+      labels:
+        app: data-source
+    spec:
+      containers:
+        - name: data-source
+          image: python:3.11-slim
+          command: ["python3", "/app/app.py"]
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # Generate 5–20 rows every 300 s (5 min).
+            - name: DATA_SOURCE_INTERVAL_SEC
+              value: "300"
+            - name: DATA_SOURCE_MIN_ROWS
+              value: "5"
+            - name: DATA_SOURCE_MAX_ROWS
+              value: "20"
+          volumeMounts:
+            - name: app
+              mountPath: /app/app.py
+              subPath: app.py
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu:    50m
+              memory: 64Mi
+            limits:
+              cpu:    200m
+              memory: 128Mi
+      volumes:
+        - name: app
+          configMap:
+            name: data-source-app
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-source
+  namespace: lakehouse
+  labels:
+    app: data-source
+spec:
+  selector:
+    app: data-source
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+  type: ClusterIP

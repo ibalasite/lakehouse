@@ -50,6 +50,7 @@ _ALLOWED_SELECTORS: frozenset[str] = frozenset(
         "stg_silver_tickets",
         "gold.dims.*",
         "fact_ticket_day_wide",
+        "fact_ticket_hour_wide",
         "cache_ticket_daily",
     ]
 )

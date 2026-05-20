@@ -122,6 +122,27 @@ spec:
             - name: METABASE_ADMIN_PASSWORD
               valueFrom:
                 secretKeyRef: {name: lakehouse-secrets, key: METABASE_ADMIN_PASSWORD}
+            # ── Streaming pipeline credentials ─────────────────────────────────
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: MINIO_ROOT_USER}
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: MINIO_ROOT_PASSWORD}
+            - name: POLARIS_CLIENT_ID
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: POLARIS_CLIENT_ID}
+            - name: POLARIS_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: POLARIS_CLIENT_SECRET}
+            - name: S3_ENDPOINT
+              value: "http://minio:9000"
+            - name: POLARIS_HOST
+              value: polaris
+            - name: POLARIS_PORT
+              value: "8181"
+            - name: DATA_SOURCE_URL
+              value: "http://data-source:8080"
           volumeMounts:
             # Use subPath to avoid ConfigMap symlink recursive-loop in Airflow's DAG scanner
             - name: dags
@@ -133,6 +154,15 @@ spec:
             - name: dags
               mountPath: /opt/airflow/dags/pipeline_hourly.py
               subPath: pipeline_hourly.py
+            - name: dags
+              mountPath: /opt/airflow/dags/pipeline_streaming.py
+              subPath: pipeline_streaming.py
+            - name: scripts
+              mountPath: /opt/airflow/scripts/fetch_and_ingest.py
+              subPath: fetch_and_ingest.py
+            - name: scripts
+              mountPath: /opt/airflow/scripts/populate_mysql_cache.py
+              subPath: populate_mysql_cache.py
           resources:
             requests:
               memory: 512Mi
@@ -142,6 +172,9 @@ spec:
         - name: dags
           configMap:
             name: airflow-dags
+        - name: scripts
+          configMap:
+            name: airflow-scripts
 ---
 apiVersion: apps/v1
 kind: Deployment

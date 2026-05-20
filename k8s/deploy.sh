@@ -209,6 +209,21 @@ ${KC} create configmap init-scripts \
     --dry-run=client -o yaml \
     | kubectl --context="${CONTEXT}" apply -f -
 
+# Airflow scripts — fetch_and_ingest + populate_mysql_cache, mounted into Airflow pod
+log "  Building airflow-scripts ConfigMap ..."
+${KC} create configmap airflow-scripts \
+    --from-file=fetch_and_ingest.py="${INIT_DIR}/fetch_and_ingest.py" \
+    --from-file=populate_mysql_cache.py="${INIT_DIR}/populate_mysql_cache.py" \
+    --dry-run=client -o yaml \
+    | kubectl --context="${CONTEXT}" apply -f -
+
+# Data source app — mounted into the data-source pod
+log "  Building data-source-app ConfigMap from platform/data_source/ ..."
+${KC} create configmap data-source-app \
+    --from-file=app.py="${PROJECT_DIR}/platform/data_source/app.py" \
+    --dry-run=client -o yaml \
+    | kubectl --context="${CONTEXT}" apply -f -
+
 # Polaris bootstrap script
 log "  Building polaris-bootstrap-script ConfigMap ..."
 ${KC} create configmap polaris-bootstrap-script \
@@ -222,6 +237,7 @@ ${KC} create configmap airflow-dags \
     --from-file=pipeline_daily.py="${DAG_DIR}/pipeline_daily.py" \
     --from-file=pipeline_backfill.py="${DAG_DIR}/pipeline_backfill.py" \
     --from-file=pipeline_hourly.py="${DAG_DIR}/pipeline_hourly.py" \
+    --from-file=pipeline_streaming.py="${DAG_DIR}/pipeline_streaming.py" \
     --dry-run=client -o yaml \
     | kubectl --context="${CONTEXT}" apply -f -
 
@@ -274,7 +290,13 @@ step "Deploying Trino"
 kubectl --context="${CONTEXT}" apply -f "${SCRIPT_DIR}/trino.yaml"
 wait_ready trino 300
 
-# ── 12. Generate seed data ────────────────────────────────────────────────────
+# ── 12. Data Source pod ────────────────────────────────────────────────────────
+step "Deploying data-source pod"
+kubectl --context="${CONTEXT}" apply -f "${SCRIPT_DIR}/data-source.yaml"
+wait_ready data-source 60
+success "Data source pod ready"
+
+# ── 12b. Generate seed data ───────────────────────────────────────────────────
 if [[ "${SKIP_JOBS}" == "false" && "${SKIP_SEED}" == "false" ]]; then
     step "Generating 10M ticket records"
     ${KC} delete job generate-tickets --ignore-not-found
@@ -321,6 +343,7 @@ printf '  %-22s %s\n' "MinIO Console"   "http://localhost:30901"
 printf '  %-22s %s\n' "Trino UI"        "http://localhost:30080"
 printf '  %-22s %s\n' "Airflow UI"      "http://localhost:30888  (admin / see .env AIRFLOW_ADMIN_PASSWORD)"
 printf '  %-22s %s\n' "Metabase"        "http://localhost:30300  (admin@local.com / see .env METABASE_ADMIN_PASSWORD)"
+printf '  %-22s %s\n' "Data Source"     "http://data-source:8080 (cluster-internal — generates 5-20 tickets/5min)"
 printf '\n%s  All services deployed.%s\n\n' "${GREEN}" "${RESET}"
 printf '  To watch pod status:\n'
 printf '    kubectl --context=rancher-desktop -n lakehouse get pods -w\n\n'

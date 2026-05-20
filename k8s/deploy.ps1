@@ -225,6 +225,17 @@ KC create configmap init-scripts `
     "--from-file=05_metabase_setup.py=$(Join-Path $InitDir '05_metabase_setup.py')" `
     --dry-run=client -o yaml | kubectl --context=$Context apply -f -
 
+Log "  Building airflow-scripts ConfigMap ..."
+KC create configmap airflow-scripts `
+    "--from-file=fetch_and_ingest.py=$(Join-Path $InitDir 'fetch_and_ingest.py')" `
+    "--from-file=populate_mysql_cache.py=$(Join-Path $InitDir 'populate_mysql_cache.py')" `
+    --dry-run=client -o yaml | kubectl --context=$Context apply -f -
+
+Log "  Building data-source-app ConfigMap ..."
+KC create configmap data-source-app `
+    "--from-file=app.py=$(Join-Path $ProjectDir 'platform\data_source\app.py')" `
+    --dry-run=client -o yaml | kubectl --context=$Context apply -f -
+
 Log "  Building polaris-bootstrap-script ConfigMap ..."
 KC create configmap polaris-bootstrap-script `
     "--from-file=bootstrap.py=$(Join-Path $InitDir '02_polaris_bootstrap.py')" `
@@ -235,6 +246,7 @@ KC create configmap airflow-dags `
     "--from-file=pipeline_daily.py=$(Join-Path $DagDir 'pipeline_daily.py')" `
     "--from-file=pipeline_backfill.py=$(Join-Path $DagDir 'pipeline_backfill.py')" `
     "--from-file=pipeline_hourly.py=$(Join-Path $DagDir 'pipeline_hourly.py')" `
+    "--from-file=pipeline_streaming.py=$(Join-Path $DagDir 'pipeline_streaming.py')" `
     --dry-run=client -o yaml | kubectl --context=$Context apply -f -
 
 Success "ConfigMaps applied"
@@ -283,7 +295,13 @@ Step "Deploying Trino"
 kubectl --context=$Context apply -f (Join-Path $ScriptDir 'trino.yaml')
 Wait-Ready 'trino' 300
 
-# ── Step 12: Generate seed data ────────────────────────────────────────────────
+# ── Step 12: Data Source pod ───────────────────────────────────────────────────
+Step "Deploying data-source pod"
+kubectl --context=$Context apply -f (Join-Path $ScriptDir 'data-source.yaml')
+Wait-Ready 'data-source' 60
+Success "Data source pod ready"
+
+# ── Step 12b: Generate seed data ───────────────────────────────────────────────
 if (-not $SkipJobs -and -not $SkipSeed) {
     Step "Generating seed ticket records"
     KC delete job generate-tickets --ignore-not-found 2>$null
@@ -329,6 +347,7 @@ Write-Host ("  {0,-22} {1}" -f "MinIO Console", "http://localhost:30901")
 Write-Host ("  {0,-22} {1}" -f "Trino UI",      "http://localhost:30080")
 Write-Host ("  {0,-22} {1}" -f "Airflow UI",    "http://localhost:30888  (admin / AIRFLOW_ADMIN_PASSWORD in .env)")
 Write-Host ("  {0,-22} {1}" -f "Metabase",      "http://localhost:30300  (admin@local.com / METABASE_ADMIN_PASSWORD in .env)")
+Write-Host ("  {0,-22} {1}" -f "Data Source",   "http://data-source:8080 (cluster-internal — 5-20 tickets/5min)")
 Write-Host ""
 Write-Host "  All services deployed." -ForegroundColor Green
 Write-Host ""

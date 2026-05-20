@@ -1,0 +1,122 @@
+version: 1
+
+# ── Ticket metric field registry ──────────────────────────────────────────────
+# Drives generate_pivot_models.py to emit fact_metric_hour_wide,
+# fact_metric_day_wide, and fact_metric_month_wide SQL models.
+#
+# aggregation.hour_to_day  : how to roll hour_wide → day_wide
+# aggregation.day_to_month : how to roll day_wide  → month_wide
+#
+# weighted_avg fields require numerator_field + denominator_field pointing at
+# raw component fields (expose_to_bi: false) that store the additive pieces.
+# ─────────────────────────────────────────────────────────────────────────────
+
+fields:
+
+  # ── Volume counters ──────────────────────────────────────────────────────────
+
+  - field_code: total_tickets
+    display_name: 總問題單數
+    value_type: decimal
+    aggregation:
+      hour_to_day: sum
+      day_to_month: sum
+    expose_to_bi: true
+
+  - field_code: resolved_tickets
+    display_name: 已結案數
+    value_type: decimal
+    aggregation:
+      hour_to_day: sum
+      day_to_month: sum
+    expose_to_bi: true
+
+  - field_code: one_shot_resolved
+    display_name: 一次結案數
+    value_type: decimal
+    aggregation:
+      hour_to_day: sum
+      day_to_month: sum
+    expose_to_bi: true
+
+  - field_code: complain_tickets
+    display_name: 客訴問題單數
+    value_type: decimal
+    aggregation:
+      hour_to_day: sum
+      day_to_month: sum
+    expose_to_bi: true
+
+  - field_code: forwarded_tickets
+    display_name: 轉派問題單數
+    value_type: decimal
+    aggregation:
+      hour_to_day: sum
+      day_to_month: sum
+    expose_to_bi: true
+
+  - field_code: within_sla_tickets
+    display_name: 時效內問題單數
+    value_type: decimal
+    aggregation:
+      hour_to_day: sum
+      day_to_month: sum
+    expose_to_bi: true
+
+  # ── Weighted-avg components (hidden from BI) ────────────────────────────────
+  # These additive raw values allow day_wide/month_wide to correctly
+  # re-aggregate averages without information loss.
+
+  - field_code: resolution_hours_sum
+    display_name: 結案時效總和(hr)
+    value_type: double
+    aggregation:
+      hour_to_day: sum
+      day_to_month: sum
+    expose_to_bi: false
+
+  - field_code: resolution_hours_valid_count
+    display_name: 有效結案時效筆數
+    value_type: decimal
+    aggregation:
+      hour_to_day: sum
+      day_to_month: sum
+    expose_to_bi: false
+
+  - field_code: response_hours_sum
+    display_name: 回覆時效總和(hr)
+    value_type: double
+    aggregation:
+      hour_to_day: sum
+      day_to_month: sum
+    expose_to_bi: false
+
+  - field_code: response_hours_valid_count
+    display_name: 有效回覆時效筆數
+    value_type: decimal
+    aggregation:
+      hour_to_day: sum
+      day_to_month: sum
+    expose_to_bi: false
+
+  # ── Weighted-average metrics ─────────────────────────────────────────────────
+
+  - field_code: avg_resolution_hours
+    display_name: 平均結案時效(hr)
+    value_type: double
+    aggregation:
+      hour_to_day: weighted_avg
+      day_to_month: weighted_avg
+    numerator_field: resolution_hours_sum
+    denominator_field: resolution_hours_valid_count
+    expose_to_bi: true
+
+  - field_code: avg_response_hours
+    display_name: 平均回覆時效(hr)
+    value_type: double
+    aggregation:
+      hour_to_day: weighted_avg
+      day_to_month: weighted_avg
+    numerator_field: response_hours_sum
+    denominator_field: response_hours_valid_count
+    expose_to_bi: true
