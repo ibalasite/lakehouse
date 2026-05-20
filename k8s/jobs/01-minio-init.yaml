@@ -40,13 +40,9 @@ spec:
             - |
               set -e
               mc alias set lh http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"
-              mc mb --ignore-existing lh/lakehouse
-              mc mb --ignore-existing lh/lakehouse/raw
-              mc mb --ignore-existing lh/lakehouse/bronze
-              mc mb --ignore-existing lh/lakehouse/silver
-              mc mb --ignore-existing lh/lakehouse/gold
-              mc anonymous set none lh/lakehouse
-              echo "MinIO buckets initialised."
+              mc mb --ignore-existing lh/lakehouse-local
+              mc anonymous set none lh/lakehouse-local
+              echo "MinIO bucket lakehouse-local initialised (warehouse/ prefix managed by Iceberg)."
           resources:
             requests:
               memory: 64Mi

@@ -166,6 +166,9 @@ spec:
             - name: POLARIS_CLIENT_SECRET
               valueFrom:
                 secretKeyRef: {name: lakehouse-secrets, key: POLARIS_CLIENT_SECRET}
+            - name: MINIO_BUCKET
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: MINIO_BUCKET}
             - name: S3_ENDPOINT
               value: "http://minio:9000"
             - name: POLARIS_HOST

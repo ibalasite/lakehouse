@@ -11,7 +11,7 @@
 /*
   stg_bronze_tickets
   ──────────────────────────────────────────────────────────────────────────────
-  Bronze layer: append-only raw ingest from iceberg.raw.raw_tickets.
+  Bronze layer: append-only raw ingest from iceberg.bronze.raw_tickets.
 
   Incremental strategy: APPEND.
   Watermark: ingested_at — the pipeline ingest timestamp set by the
@@ -30,7 +30,7 @@
 
 WITH source AS (
   SELECT *
-  FROM {{ source('raw', 'raw_tickets') }}
+  FROM {{ source('bronze', 'raw_tickets') }}
   {% if is_incremental() %}
   -- Load only rows newer than the latest watermark already in bronze.
   -- A 10-minute overlap buffer guards against late Kafka delivery.

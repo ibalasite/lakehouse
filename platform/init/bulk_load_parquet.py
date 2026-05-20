@@ -24,6 +24,7 @@ import logging
 import math
 import os
 import random
+import sys
 import time
 from collections import Counter
 from datetime import datetime, timezone
@@ -64,8 +65,8 @@ def _require_env(name: str) -> str:
 MINIO_ENDPOINT = os.environ.get("S3_ENDPOINT", "http://localhost:9000")
 MINIO_USER     = _require_env("MINIO_ROOT_USER")
 MINIO_PASS     = _require_env("MINIO_ROOT_PASSWORD")
-BUCKET         = "lakehouse"
-S3_PREFIX      = "raw/raw_tickets"
+BUCKET         = os.environ.get("MINIO_BUCKET", "lakehouse-local")
+S3_PREFIX      = "warehouse/bronze/raw_tickets"
 
 TRINO_HOST = os.environ.get("TRINO_HOST", "localhost")
 TRINO_PORT = int(os.environ.get("TRINO_PORT", "8080"))
@@ -266,7 +267,7 @@ def get_iceberg_catalog() -> any:
 
 
 CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS iceberg.raw.raw_tickets (
+CREATE TABLE IF NOT EXISTS iceberg.bronze.raw_tickets (
     prblm_code              VARCHAR,
     prblm_sysdate           TIMESTAMP(6) WITH TIME ZONE,
     prblm_updateddate       TIMESTAMP(6) WITH TIME ZONE,
@@ -296,7 +297,7 @@ CREATE TABLE IF NOT EXISTS iceberg.raw.raw_tickets (
 )
 WITH (
     format = 'PARQUET',
-    location = 's3://lakehouse/raw/raw_tickets/',
+    location = 's3://lakehouse-local/warehouse/bronze/raw_tickets/',
     partitioning = ARRAY['year(prblm_sysdate)']
 )
 """.strip()
@@ -305,13 +306,13 @@ WITH (
 def setup_trino_table(host: str, port: int) -> None:
     log.info("Connecting to Trino at %s:%d…", host, port)
     conn = trino.dbapi.connect(host=host, port=port, user="admin",
-                               catalog="iceberg", schema="raw",
+                               catalog="iceberg", schema="bronze",
                                http_scheme="http", request_timeout=120)
     cur = conn.cursor()
 
     # Drop stale Polaris registration if needed
     try:
-        cur.execute("SELECT count(*) FROM iceberg.raw.raw_tickets")
+        cur.execute("SELECT count(*) FROM iceberg.bronze.raw_tickets")
         cur.fetchall()
         log.info("Table already exists and is readable — will append.")
         conn.close()
@@ -321,7 +322,7 @@ def setup_trino_table(host: str, port: int) -> None:
         if "Failed to load" in msg or "ICEBERG_CATALOG_ERROR" in msg or "does not exist" in msg.lower():
             log.info("Stale or missing table — recreating…")
             try:
-                cur.execute("DROP TABLE IF EXISTS iceberg.raw.raw_tickets")
+                cur.execute("DROP TABLE IF EXISTS iceberg.bronze.raw_tickets")
                 cur.fetchall()
             except Exception:
                 pass
@@ -330,7 +331,7 @@ def setup_trino_table(host: str, port: int) -> None:
 
     cur.execute(CREATE_TABLE_SQL)
     cur.fetchall()
-    log.info("Table iceberg.raw.raw_tickets created.")
+    log.info("Table iceberg.bronze.raw_tickets created.")
     conn.close()
 
 
@@ -350,7 +351,7 @@ def main() -> None:
 
     # Open pyiceberg table for direct Iceberg writes (bypasses Trino INSERT)
     iceberg_catalog = get_iceberg_catalog()
-    iceberg_table = iceberg_catalog.load_table("raw.raw_tickets")
+    iceberg_table = iceberg_catalog.load_table("bronze.raw_tickets")
     log.info("Iceberg table loaded: %s", iceberg_table.location())
 
     total_rows  = args.rows
@@ -385,10 +386,10 @@ def main() -> None:
     if not args.skip_trino:
         log.info("Verifying via Trino…")
         conn = trino.dbapi.connect(host=TRINO_HOST, port=TRINO_PORT, user="admin",
-                                   catalog="iceberg", schema="raw",
+                                   catalog="iceberg", schema="bronze",
                                    http_scheme="http", request_timeout=120)
         cur = conn.cursor()
-        cur.execute("SELECT count(*) FROM iceberg.raw.raw_tickets")
+        cur.execute("SELECT count(*) FROM iceberg.bronze.raw_tickets")
         count = cur.fetchone()[0]
         conn.close()
         log.info("Trino count: %s rows", f"{count:,}")

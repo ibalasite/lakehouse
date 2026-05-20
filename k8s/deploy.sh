@@ -260,7 +260,18 @@ wait_ready minio     120
 wait_ready mysql     180
 wait_ready postgres   90
 
-# ── 9. MinIO init job ─────────────────────────────────────────────────────────
+# ── 9. PostgreSQL init job (create polaris database) ──────────────────────────
+if [[ "${SKIP_JOBS}" == "false" ]]; then
+    step "Initialising PostgreSQL: creating polaris database"
+    ${KC} delete job postgres-init --ignore-not-found
+    kubectl --context="${CONTEXT}" apply -f "${SCRIPT_DIR}/jobs/00-postgres-init.yaml"
+    log "  Waiting for postgres-init job to complete..."
+    ${KC} wait job/postgres-init --for=condition=complete --timeout=120s \
+        || { ${KC} logs job/postgres-init; fail "postgres-init job failed"; }
+    success "PostgreSQL polaris database ready"
+fi
+
+# ── 10. MinIO init job ────────────────────────────────────────────────────────
 if [[ "${SKIP_JOBS}" == "false" ]]; then
     step "Running MinIO bucket initialisation job"
     ${KC} delete job minio-init --ignore-not-found
@@ -268,11 +279,11 @@ if [[ "${SKIP_JOBS}" == "false" ]]; then
     log "  Waiting for minio-init job to complete..."
     ${KC} wait job/minio-init --for=condition=complete --timeout=120s \
         || { ${KC} logs job/minio-init; fail "minio-init job failed"; }
-    success "MinIO buckets created"
+    success "MinIO bucket lakehouse-local created"
 fi
 
-# ── 10. Polaris bootstrap job ─────────────────────────────────────────────────
-step "Waiting for Polaris to be ready"
+# ── 11. Polaris bootstrap job ─────────────────────────────────────────────────
+step "Waiting for Polaris to be ready (PostgreSQL persistence)"
 wait_ready polaris 300
 
 if [[ "${SKIP_JOBS}" == "false" ]]; then
@@ -285,18 +296,18 @@ if [[ "${SKIP_JOBS}" == "false" ]]; then
     success "Polaris catalog bootstrapped"
 fi
 
-# ── 11. Trino ─────────────────────────────────────────────────────────────────
+# ── 12. Trino ─────────────────────────────────────────────────────────────────
 step "Deploying Trino"
 kubectl --context="${CONTEXT}" apply -f "${SCRIPT_DIR}/trino.yaml"
 wait_ready trino 300
 
-# ── 12. Data Source pod ────────────────────────────────────────────────────────
+# ── 13. Data Source pod ────────────────────────────────────────────────────────
 step "Deploying data-source pod"
 kubectl --context="${CONTEXT}" apply -f "${SCRIPT_DIR}/data-source.yaml"
 wait_ready data-source 60
 success "Data source pod ready"
 
-# ── 12b. Generate seed data ───────────────────────────────────────────────────
+# ── 13b. Generate seed data ───────────────────────────────────────────────────
 if [[ "${SKIP_JOBS}" == "false" && "${SKIP_SEED}" == "false" ]]; then
     step "Generating 10M ticket records"
     ${KC} delete job generate-tickets --ignore-not-found
@@ -309,7 +320,7 @@ elif [[ "${SKIP_SEED}" == "true" ]]; then
     warn "Skipping seed data generation (--skip-seed)"
 fi
 
-# ── 13. Airflow ────────────────────────────────────────────────────────────────
+# ── 14. Airflow ────────────────────────────────────────────────────────────────
 step "Deploying Airflow"
 envsubst_file "${SCRIPT_DIR}/airflow.yaml" \
     | kubectl --context="${CONTEXT}" apply -f -
@@ -324,7 +335,7 @@ for dag in lakehouse_streaming lakehouse_hourly lakehouse_daily lakehouse_backfi
 done
 success "Airflow ready"
 
-# ── 14. Metabase ──────────────────────────────────────────────────────────────
+# ── 15. Metabase ──────────────────────────────────────────────────────────────
 step "Deploying Metabase"
 kubectl --context="${CONTEXT}" apply -f "${SCRIPT_DIR}/metabase.yaml"
 wait_ready metabase 300
@@ -339,7 +350,7 @@ if [[ "${SKIP_JOBS}" == "false" ]]; then
     success "Metabase dashboard configured"
 fi
 
-# ── 15. Summary ────────────────────────────────────────────────────────────────
+# ── 16. Summary ────────────────────────────────────────────────────────────────
 printf '\n%s══════════════════════════════════════════════════════%s\n' "${BOLD}" "${RESET}"
 printf '%s  Lakehouse K8s Stack — Service URLs%s\n' "${GREEN}" "${RESET}"
 printf '%s══════════════════════════════════════════════════════%s\n\n' "${BOLD}" "${RESET}"

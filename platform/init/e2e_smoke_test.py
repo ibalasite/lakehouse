@@ -395,7 +395,7 @@ def refresh_cache_locally() -> None:
         AVG(CASE WHEN prblm_donedate IS NOT NULL
                  THEN DATE_DIFF('minute', prblm_sysdate, prblm_donedate) / 60.0 END),
         AVG(DATE_DIFF('minute', prblm_sysdate, prblm_preassignenddate) / 60.0)
-    FROM iceberg.raw.raw_tickets
+    FROM iceberg.bronze.raw_tickets
     WHERE CAST(DATE_TRUNC('day', prblm_sysdate) AS DATE) = CURRENT_DATE
     GROUP BY 1,2,3,4,5,6,7
     ORDER BY 1,2,3

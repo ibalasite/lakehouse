@@ -162,7 +162,7 @@ with DAG(
 Runs every **15 minutes**.
 
 1. **ingest_from_source** — drains the data-source pod HTTP API and appends
-   new rows to `iceberg.raw.raw_tickets` via pyiceberg.
+   new rows to `iceberg.bronze.raw_tickets` via pyiceberg.
 2. **bronze_silver** group — incremental dbt bronze + silver merge.
 3. **gold_hour** — incremental merge into `fact_ticket_hour_wide`.
 4. **populate_hourly_cache** — refresh `cache_ticket_hourly` in MySQL.
@@ -178,7 +178,7 @@ Generates ≤60 rows per cycle — zero performance impact.
         bash_command = f"python3 {_shlex.quote(FETCH_SCRIPT)}",
         doc_md       = (
             "Drain the data-source pod HTTP API and write new rows to "
-            "iceberg.raw.raw_tickets via pyiceberg."
+            "iceberg.bronze.raw_tickets via pyiceberg."
         ),
     )
 

@@ -51,6 +51,9 @@ spec:
               value: http://polaris:8181/api/management/v1
             - name: POLARIS_CATALOG_URL
               value: http://polaris:8181/api/catalog/v1
+            - name: MINIO_BUCKET
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: MINIO_BUCKET}
             - name: POLARIS_IO_S3_ENDPOINT
               value: http://10.43.219.27:9000
           volumeMounts:

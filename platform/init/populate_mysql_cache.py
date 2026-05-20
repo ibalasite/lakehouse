@@ -75,7 +75,7 @@ SELECT
              END)                                    AS avg_resolution_hours,
     AVG(DATE_DIFF('minute', prblm_sysdate, prblm_preassignenddate) / 60.0)
                                                      AS avg_response_hours
-FROM iceberg.raw.raw_tickets
+FROM iceberg.bronze.raw_tickets
 WHERE prblm_sysdate >= TIMESTAMP '{year}-{month:02d}-01 00:00:00.000000 UTC'
   AND prblm_sysdate <  TIMESTAMP '{next_year}-{next_month:02d}-01 00:00:00.000000 UTC'
 GROUP BY 1,2,3,4,5,6
@@ -103,7 +103,7 @@ SELECT
              END)                                     AS avg_resolution_hours,
     AVG(DATE_DIFF('minute', prblm_sysdate, prblm_preassignenddate) / 60.0)
                                                       AS avg_response_hours
-FROM iceberg.raw.raw_tickets
+FROM iceberg.bronze.raw_tickets
 WHERE prblm_sysdate >= TIMESTAMP '{year}-{month:02d}-01 00:00:00.000000 UTC'
   AND prblm_sysdate <  TIMESTAMP '{next_year}-{next_month:02d}-01 00:00:00.000000 UTC'
 GROUP BY 1,2,3,4,5,6,7

@@ -4,7 +4,7 @@ models:
   - name: stg_bronze_tickets
     description: >
       Bronze staging layer for customer service tickets. Append-only incremental
-      load from iceberg.raw.raw_tickets. PII is masked/hashed at this layer.
+      load from iceberg.bronze.raw_tickets. PII is masked/hashed at this layer.
       Schema evolves with source via mergeSchema=true; downstream silver layer
       handles deduplication and conformance.
     config:

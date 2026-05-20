@@ -68,7 +68,7 @@ SELECT
              END)                                    AS avg_resolution_hours,
     AVG(DATE_DIFF('minute', prblm_sysdate, prblm_preassignenddate) / 60.0)
                                                      AS avg_response_hours
-FROM iceberg.raw.raw_tickets
+FROM iceberg.bronze.raw_tickets
 WHERE CAST(DATE_TRUNC('day', prblm_sysdate) AS DATE) = CURRENT_DATE
 GROUP BY 1,2,3,4,5,6
 ORDER BY 1,2
@@ -164,7 +164,7 @@ SELECT
              END)                                     AS avg_resolution_hours,
     AVG(DATE_DIFF('minute', prblm_sysdate, prblm_preassignenddate) / 60.0)
                                                       AS avg_response_hours
-FROM iceberg.raw.raw_tickets
+FROM iceberg.bronze.raw_tickets
 WHERE CAST(DATE_TRUNC('day', prblm_sysdate) AS DATE) = CURRENT_DATE
 GROUP BY 1,2,3,4,5,6,7
 ORDER BY 1,2,3

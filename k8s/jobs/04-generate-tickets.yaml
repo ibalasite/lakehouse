@@ -5,9 +5,8 @@ metadata:
   name: generate-tickets
   namespace: lakehouse
 spec:
-  backoffLimit: 6
-  # 10M rows takes ~3 hours at ~1000 rows/sec on a local k3s cluster
-  activeDeadlineSeconds: 14400
+  backoffLimit: 3
+  activeDeadlineSeconds: 7200
   template:
     spec:
       restartPolicy: OnFailure
@@ -19,7 +18,7 @@ spec:
             - -c
             - |
               mc alias set store http://minio:9000 "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD" --quiet
-              mc rm --recursive --force store/lakehouse/raw/raw_tickets/ 2>/dev/null || true
+              mc rm --recursive --force store/lakehouse-local/warehouse/bronze/raw_tickets/ 2>/dev/null || true
               echo "S3 location cleared."
           env:
             - name: MINIO_ROOT_USER
@@ -53,15 +52,15 @@ spec:
               token = r.json()["access_token"]
               hdrs = {"Authorization": f"Bearer {token}"}
 
-              # Force-purge table entry without touching S3 files
+              # Drop table entry without purging S3 files (purgeRequested=false)
               r2 = requests.delete(
-                  f"{base}/lakehouse/namespaces/raw/tables/raw_tickets",
+                  f"{base}/lakehouse/namespaces/bronze/tables/raw_tickets",
                   params={"purgeRequested": "false"},
                   headers=hdrs)
               if r2.status_code in (200, 204):
-                  print(f"Polaris: table raw_tickets dropped (purgeRequested=false)")
+                  print("Polaris: bronze.raw_tickets dropped (purgeRequested=false)")
               elif r2.status_code == 404:
-                  print("Polaris: table raw_tickets not found — nothing to drop")
+                  print("Polaris: bronze.raw_tickets not found — nothing to drop")
               else:
                   print(f"Polaris drop returned {r2.status_code}: {r2.text}")
               PYEOF
@@ -72,19 +71,16 @@ spec:
             - name: POLARIS_CLIENT_SECRET
               valueFrom:
                 secretKeyRef: {name: lakehouse-secrets, key: POLARIS_CLIENT_SECRET}
-        - name: wait-trino
+        - name: wait-polaris
           image: busybox:1.36
           command:
             - sh
             - -c
             - |
-              echo "Waiting for Trino HTTP..."
-              until wget -qO- http://trino:8080/v1/info 2>&1 | grep -q '"starting":false'; do
-                echo "Trino not ready yet..."; sleep 10
+              until wget -qO- http://polaris:8182/q/health 2>&1 | grep -q "UP\|200\|{"; do
+                echo "Waiting for polaris..."; sleep 5
               done
-              echo "Trino ready — warming up S3 DNS (30s)..."
-              sleep 30
-              echo "Done."
+              echo "Polaris ready."
       containers:
         - name: generator
           image: python:3.11-slim
@@ -92,21 +88,30 @@ spec:
             - sh
             - -c
             - |
-              pip install --quiet numpy "trino[sqlalchemy]" boto3
-              python /scripts/04_generate_tickets.py --host trino --port 8080 --insert-chunk 2500 --batch-size 100000
+              pip install --quiet numpy pyarrow "pyiceberg[s3fs]" boto3
+              python /scripts/04_generate_tickets.py
           env:
-            - name: TRINO_HOST
-              value: trino
-            - name: TRINO_PORT
-              value: "8080"
             - name: S3_ENDPOINT
               value: http://minio:9000
+            - name: MINIO_BUCKET
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: MINIO_BUCKET}
             - name: MINIO_ROOT_USER
               valueFrom:
                 secretKeyRef: {name: lakehouse-secrets, key: MINIO_ROOT_USER}
             - name: MINIO_ROOT_PASSWORD
               valueFrom:
                 secretKeyRef: {name: lakehouse-secrets, key: MINIO_ROOT_PASSWORD}
+            - name: POLARIS_HOST
+              value: polaris
+            - name: POLARIS_PORT
+              value: "8181"
+            - name: POLARIS_CLIENT_ID
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: POLARIS_CLIENT_ID}
+            - name: POLARIS_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: POLARIS_CLIENT_SECRET}
           volumeMounts:
             - name: scripts
               mountPath: /scripts
@@ -114,7 +119,7 @@ spec:
             requests:
               memory: 512Mi
             limits:
-              memory: 1Gi
+              memory: 1500Mi
       volumes:
         - name: scripts
           configMap:

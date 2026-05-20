@@ -20,7 +20,7 @@ MC_IMAGE="${MC_IMAGE:-minio/mc:RELEASE.2024-11-21T17-21-54Z}"
 COMPOSE_PROJECT="${COMPOSE_PROJECT_NAME:-lakehouse}"
 DOCKER_NETWORK="${DOCKER_NETWORK:-${COMPOSE_PROJECT}_lakehouse-net}"
 
-BUCKET="lakehouse"
+BUCKET="lakehouse-local"
 MAX_WAIT_SECONDS=120
 
 # ── Temp env-file (credentials never appear in process list or docker inspect) -
@@ -77,22 +77,17 @@ until curl -sf --max-time 5 "${MINIO_HOST}/minio/health/live" > /dev/null 2>&1; 
 done
 log "MinIO is healthy (waited ${elapsed}s)"
 
-# ── 3. Create bucket and zone prefixes ───────────────────────────────────────
+# ── 3. Create bucket ──────────────────────────────────────────────────────────
 log "Creating bucket: ${BUCKET} ..."
 run_mc mb --ignore-existing "lh/${BUCKET}"
-
-for zone in raw bronze silver gold; do
-    log "  Creating zone prefix: ${BUCKET}/${zone}/ ..."
-    run_mc mb --ignore-existing "lh/${BUCKET}/${zone}"
-done
 
 # ── 4. Enforce private access ─────────────────────────────────────────────────
 log "Setting bucket policy to private (no anonymous access) ..."
 run_mc anonymous set none "lh/${BUCKET}"
 
 # ── 5. Lifecycle rules ────────────────────────────────────────────────────────
-log "Applying lifecycle policy to raw zone ..."
-LIFECYCLE_JSON='{"Rules":[{"ID":"expire-raw-365d","Status":"Enabled","Filter":{"Prefix":"raw/"},"Expiration":{"Days":365}}]}'
+log "Applying lifecycle policy to bronze warehouse zone ..."
+LIFECYCLE_JSON='{"Rules":[{"ID":"expire-bronze-365d","Status":"Enabled","Filter":{"Prefix":"warehouse/bronze/"},"Expiration":{"Days":365}}]}'
 if echo "${LIFECYCLE_JSON}" | run_mc ilm import "lh/${BUCKET}" 2>/dev/null; then
     log "  Lifecycle policy applied."
 else
@@ -103,5 +98,5 @@ fi
 log ""
 log "MinIO initialisation complete."
 log "  Bucket  : s3://${BUCKET}/"
-log "  Zones   : raw/ bronze/ silver/ gold/"
+log "  Warehouse: s3://${BUCKET}/warehouse/{bronze,silver,gold,cache}/"
 log "  Console : http://localhost:${MINIO_CONSOLE_PORT}"

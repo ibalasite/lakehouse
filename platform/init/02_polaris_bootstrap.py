@@ -57,10 +57,13 @@ CLIENT_ID = _require_env("POLARIS_CLIENT_ID")
 CLIENT_SECRET = _require_env("POLARIS_CLIENT_SECRET")
 
 CATALOG_NAME = os.environ.get("POLARIS_CATALOG", "lakehouse")
+MINIO_BUCKET = os.environ.get("MINIO_BUCKET", "lakehouse-local")
 PRINCIPAL_NAME = "trino-svc"
 CATALOG_ROLE_NAME = "all_access"
 PRINCIPAL_ROLE_NAME = "all_access_role"
-NAMESPACES = ["raw", "bronze", "silver", "gold", "cache"]
+# EDD section 6.1: four required namespaces — raw is NOT in the spec.
+# Source data lands in bronze.raw_tickets (append-only).
+NAMESPACES = ["bronze", "silver", "gold", "cache"]
 
 MAX_WAIT_SECONDS = int(os.environ.get("POLARIS_WAIT_SECONDS", "120"))
 
@@ -173,18 +176,17 @@ def create_principal(token: str) -> None:
 
 
 def create_catalog(token: str) -> None:
-    log.info("Step 2: Creating catalog '%s' ...", CATALOG_NAME)
+    log.info("Step 2: Creating catalog '%s' (base: s3://%s/warehouse/) ...", CATALOG_NAME, MINIO_BUCKET)
     post(token, "/catalogs", {
         "name": CATALOG_NAME,
         "type": "INTERNAL",
         "properties": {
-            "default-base-location": f"s3://{CATALOG_NAME}/",
+            # EDD section 6.2: s3://lakehouse-local/warehouse/<namespace>/...
+            "default-base-location": f"s3://{MINIO_BUCKET}/warehouse/",
         },
         "storageConfigInfo": {
             "storageType": "S3",
-            "allowedLocations": [f"s3://{CATALOG_NAME}/"],
-            # pathStyleAccess is the correct Polaris management API field (boolean).
-            # s3.endpoint is configured at the application level via AWS_ENDPOINT_URL_S3.
+            "allowedLocations": [f"s3://{MINIO_BUCKET}/"],
             "pathStyleAccess": True,
         },
     })
@@ -242,7 +244,8 @@ def create_namespaces(token: str) -> None:
         catalog_post(token, f"/{CATALOG_NAME}/namespaces", {
             "namespace": [ns],
             "properties": {
-                "location": f"s3://{CATALOG_NAME}/{ns}/",
+                # EDD section 6.2: warehouse/ prefix per namespace
+                "location": f"s3://{MINIO_BUCKET}/warehouse/{ns}/",
             },
         })
 

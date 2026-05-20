@@ -76,8 +76,9 @@ MINIO_PASS         = _require_env("MINIO_ROOT_PASSWORD")
 POLARIS_ID         = _require_env("POLARIS_CLIENT_ID")
 POLARIS_SECRET     = _require_env("POLARIS_CLIENT_SECRET")
 
-BUCKET             = "lakehouse"
-ICEBERG_TABLE      = ("raw", "raw_tickets")
+# EDD section 6.2: bucket is lakehouse-local; source data goes to bronze namespace
+BUCKET             = os.environ.get("MINIO_BUCKET", "lakehouse-local")
+ICEBERG_TABLE      = ("bronze", "raw_tickets")
 
 
 # ── Arrow schema — must match the Iceberg table definition exactly ────────────
@@ -192,7 +193,7 @@ def main() -> None:
         iceberg_table = catalog.create_table(
             identifier=ICEBERG_TABLE,
             schema=SCHEMA,
-            location=f"s3://{BUCKET}/raw/raw_tickets",
+            location=f"s3://{BUCKET}/warehouse/bronze/raw_tickets",
         )
 
     if not rows:

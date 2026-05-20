@@ -1,25 +1,26 @@
 version: 2
 
 sources:
-  - name: raw
+  - name: bronze
     database: iceberg
-    schema: raw
+    schema: bronze
     description: >
-      Raw landing zone for e-commerce customer service ticket data.
-      All records are append-only and immutable. 10M rows sourced
-      from the production ticketing system via Kafka → Iceberg ingest.
+      Bronze landing zone for customer service ticket data.
+      All records are append-only and immutable. Source data is written
+      directly by the ingest pipeline (pyiceberg bulk write to MinIO).
+      EDD section 6.1: source data lives in the bronze namespace.
     tables:
       - name: raw_tickets
         description: >
-          Bronze layer — raw customer service ticket records with full fidelity.
+          Raw customer service ticket records with full fidelity.
           PII fields (usr_id, prblm_name) are present and must be masked or
           hashed before leaving the bronze layer.
         columns:
           - name: prblm_code
             description: >
-              Ticket ID. Business primary key. Format: PRB-YYYY-NNNNNNN
-              (e.g. PRB-2024-0000001). Not guaranteed unique in raw due to
-              CDC replay; deduplication occurs in silver.
+              Ticket ID. Business primary key. Format: PRB-YYYY-NNNNNNN.
+              Not guaranteed unique in raw due to CDC replay; deduplication
+              occurs in silver.
           - name: prblm_sysdate
             description: Timestamp when the ticket was created in the source system.
           - name: prblm_updateddate
@@ -42,64 +43,47 @@ sources:
               4=已回覆 (Replied), 5=結案 (Closed).
           - name: prblm_source_id
             description: >
-              Contact channel through which the ticket was submitted.
-              1=Email, 2=Chat, 3=Phone, 4=Portal, 5=App.
+              Contact channel. 1=Email, 2=Chat, 3=Phone, 4=Portal, 5=App.
           - name: prblm_class_id
-            description: >
-              Customer-facing category classification. Integer 1–20.
-              Maps to the customer's reported issue category.
+            description: Customer-facing category classification. Integer 1–20.
           - name: prblm_intclass_id
-            description: >
-              Internal service category used by agents. Integer 1–30.
+            description: Internal service category used by agents. Integer 1–30.
           - name: prblm_perform_id
             description: >
-              SLA tier assigned to this ticket.
-              1=急件 (Urgent, 8 hr SLA), 2=特急 (Critical, 4 hr SLA),
+              SLA tier. 1=急件 (Urgent, 8 hr SLA), 2=特急 (Critical, 4 hr SLA),
               NULL=一般 (Standard, 24 hr SLA).
           - name: prblm_complain_id
             description: >
               Complaint escalation level.
               1=一般 (Standard), 2=提升 (Escalated), 3=客訴 (Formal Complaint).
           - name: prblm_processuser
-            description: Employee ID of the agent currently assigned to the ticket.
+            description: Employee ID of the agent currently assigned.
           - name: prblm_doneuser
             description: Employee ID of the agent who closed the ticket.
           - name: prblm_sysuser
-            description: Employee ID of the user who created the ticket in the system.
+            description: Employee ID of the user who created the ticket.
           - name: usr_id
-            description: >
-              Member/customer ID. PII — must be hashed (pii_hash) before
-              exposure outside the bronze layer.
+            description: Member/customer ID. PII — must be hashed (pii_hash) before leaving bronze.
           - name: prblm_name
-            description: >
-              Customer display name. PII — must be masked (mask_name) before
-              exposure outside the bronze layer.
+            description: Customer display name. PII — must be masked (mask_name) before leaving bronze.
           - name: gd_id
-            description: Store or shop identifier associated with the ticket.
+            description: Store or shop identifier.
           - name: catsub_id
             description: >
               Product line sub-site ID. Integer 1–10. Links to dim_catsub.
-              1=購物TW, 2=購物HK, 3=拍賣TW, 4=超市TW, 5=旅遊TW,
-              6=票券TW, 7=金融TW, 8=企業TW, 9=廣告TW, 10=其他TW.
           - name: supplier_id
-            description: Supplier identifier when the ticket relates to a supplier dispute.
+            description: Supplier identifier for supplier-dispute tickets.
           - name: prblm_doneatatime
-            description: >
-              Boolean flag — TRUE when the ticket was resolved on the first
-              contact without requiring follow-up.
+            description: TRUE when resolved on first contact.
           - name: prblm_forwarddatetime
-            description: >
-              Timestamp when the ticket was forwarded to another team or department.
-              NULL when the ticket was never forwarded.
+            description: Timestamp when forwarded to another team. NULL if never forwarded.
           - name: prblm_forwardtype
-            description: Integer code indicating the type of team the ticket was forwarded to.
+            description: Integer code for the forwarded-to team type.
           - name: prblm_notasreason_id
-            description: >
-              Root cause code for complaint tickets. VARCHAR lookup key
-              identifying why the customer's expectation was not met.
+            description: Root cause code for complaint tickets.
           - name: prblm_notasowndept_id
-            description: Integer ID of the department responsible for the complaint root cause.
+            description: Department ID responsible for the complaint root cause.
           - name: ingested_at
             description: >
-              Pipeline ingestion timestamp set by the Kafka→Iceberg ingest job.
+              Pipeline ingestion timestamp (set by ingest job).
               Used as the watermark for incremental bronze loads.

@@ -189,9 +189,9 @@ Failures are logged to `/tmp/pipeline_failures.log`.
     check_source_data = BashOperator(
         task_id="check_source_data",
         bash_command=(
-            f"trino --server {TRINO_SERVER} --catalog iceberg --schema raw "
+            f"trino --server {TRINO_SERVER} --catalog iceberg --schema bronze "
             "--execute \"SELECT count(*) AS new_rows "
-            "FROM iceberg.raw.raw_tickets "
+            "FROM iceberg.bronze.raw_tickets "
             "WHERE ingested_at >= current_timestamp - INTERVAL '1' DAY\" "
             "| tail -n 1 "
             "| awk '{if ($1+0 == 0) {print \"ERROR: No new rows in raw_tickets\"; exit 1} "
