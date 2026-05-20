@@ -138,7 +138,7 @@ models:
       schema: gold
     columns:
       - name: prblm_perform_id
-        description: SLA tier code primary key. Values: 1 (急件), 2 (特急), 99 (一般).
+        description: "SLA tier code primary key. Values: 1 (急件), 2 (特急), 99 (一般)."
         tests:
           - not_null
           - unique

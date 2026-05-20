@@ -183,9 +183,9 @@ def create_catalog(token: str) -> None:
         "storageConfigInfo": {
             "storageType": "S3",
             "allowedLocations": [f"s3://{CATALOG_NAME}/"],
-            "s3.endpoint": os.environ.get("POLARIS_IO_S3_ENDPOINT", "http://minio:9000"),
-            "s3.path-style-access": "true",
-            "s3.region": "us-east-1",
+            # pathStyleAccess is the correct Polaris management API field (boolean).
+            # s3.endpoint is configured at the application level via AWS_ENDPOINT_URL_S3.
+            "pathStyleAccess": True,
         },
     })
 

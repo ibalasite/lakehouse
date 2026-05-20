@@ -17,6 +17,7 @@ spec:
       containers:
         - name: metabase
           image: metabase/metabase:latest
+          imagePullPolicy: IfNotPresent
           env:
             - name: MB_DB_FILE
               value: /metabase-data/metabase.db

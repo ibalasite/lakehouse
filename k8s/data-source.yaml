@@ -80,7 +80,7 @@ spec:
 apiVersion: v1
 kind: Service
 metadata:
-  name: data-source
+  name: datasource
   namespace: lakehouse
   labels:
     app: data-source

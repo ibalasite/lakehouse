@@ -9,12 +9,14 @@ data:
     polaris.features.defaults.DROP_WITH_PURGE_ENABLED=true
     quarkus.http.port=8181
     quarkus.management.port=8182
-    # Direct MinIO access for Polaris's own S3 I/O (metadata writing, not STS)
-    # Use full FQDN to avoid ndots:5 search-domain expansion in k3s
-    polaris.io.s3.endpoint=http://minio.lakehouse.svc.cluster.local:9000
+    # Direct MinIO access for Polaris's own S3 I/O (metadata writing, not STS).
+    # Use MinIO ClusterIP to bypass Netty/AWS-SDK DNS issues in k3s.
+    # With an IP address the AWS SDK cannot use virtual-hosted-style, so it
+    # automatically falls back to path-style — no explicit flag needed.
+    polaris.io.s3.endpoint=http://10.43.219.27:9000
     polaris.io.s3.path-style-access=true
     polaris.io.s3.region=us-east-1
     # Quarkus S3 extension: override endpoint for catalog metadata writes
-    quarkus.s3.endpoint-override=http://minio.lakehouse.svc.cluster.local:9000
-    quarkus.s3.path-style-access=true
+    quarkus.s3.endpoint-override=http://10.43.219.27:9000
+    quarkus.s3.force-path-style=true
     quarkus.s3.aws.region=us-east-1

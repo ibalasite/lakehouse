@@ -60,6 +60,7 @@ def _dbt_run(select: str) -> str:
     safe_select = shlex.quote(select)
     return (
         f"cd {shlex.quote(DBT_DIR)} && "
+        f"PATH=/pip-packages/bin:$PATH "
         f"dbt run --select {safe_select} "
         f"--profiles-dir {shlex.quote(DBT_PROFILES_DIR)} "
         f"--target {shlex.quote(DBT_TARGET)}"

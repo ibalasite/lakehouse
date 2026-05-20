@@ -15,7 +15,7 @@ Required env vars (all supplied by Airflow scheduler's secretKeyRef):
     POLARIS_CLIENT_SECRET — Polaris OAuth2 client secret
 
 Optional env vars (plain values, set by airflow.yaml):
-    DATA_SOURCE_URL       — e.g. http://data-source:8080 (default)
+    DATA_SOURCE_URL       — e.g. http://datasource:8080 (default)
     S3_ENDPOINT           — e.g. http://minio:9000 (default)
     POLARIS_HOST          — e.g. polaris (default)
     POLARIS_PORT          — e.g. 8181 (default)
@@ -67,7 +67,7 @@ def _require_env(name: str) -> str:
     return value
 
 
-DATA_SOURCE_URL    = os.environ.get("DATA_SOURCE_URL",  "http://data-source:8080")
+DATA_SOURCE_URL    = os.environ.get("DATA_SOURCE_URL",  "http://datasource:8080")
 S3_ENDPOINT        = os.environ.get("S3_ENDPOINT",      "http://minio:9000")
 POLARIS_HOST       = os.environ.get("POLARIS_HOST",     "polaris")
 POLARIS_PORT       = os.environ.get("POLARIS_PORT",     "8181")
@@ -177,17 +177,31 @@ def main() -> None:
     rows: list[dict] = payload.get("rows", [])
     log.info("Received %d rows from data source", len(rows))
 
+    # 2. Ensure the Iceberg table exists regardless of whether there are new rows.
+    # Polaris is in-memory: after a cluster restart the table entry is lost even
+    # though the S3 files remain.  Re-creating here is safe — pyiceberg writes a
+    # fresh metadata snapshot.  This also guarantees Trino can see the table
+    # before dbt_bronze runs, even on a 0-row cycle.
+    from pyiceberg.exceptions import NoSuchTableError
+    catalog = get_catalog()
+    try:
+        iceberg_table = catalog.load_table(ICEBERG_TABLE)
+        log.info("Loaded table %s.%s from catalog", *ICEBERG_TABLE)
+    except NoSuchTableError:
+        log.info("Table %s.%s not found — creating it in catalog", *ICEBERG_TABLE)
+        iceberg_table = catalog.create_table(
+            identifier=ICEBERG_TABLE,
+            schema=SCHEMA,
+            location=f"s3://{BUCKET}/raw/raw_tickets",
+        )
+
     if not rows:
-        log.info("No new rows — pipeline step complete with no writes.")
+        log.info("No new rows — table ensured, pipeline step complete with no writes.")
         return
 
-    # 2. Convert to PyArrow table
+    # 3. Convert and append
     table = rows_to_table(rows)
     log.info("Built Arrow table: %d rows × %d cols", len(table), len(table.schema))
-
-    # 3. Open Iceberg table and append
-    catalog = get_catalog()
-    iceberg_table = catalog.load_table(ICEBERG_TABLE)
     iceberg_table.append(table)
     log.info(
         "Appended %d rows to iceberg.%s.%s",

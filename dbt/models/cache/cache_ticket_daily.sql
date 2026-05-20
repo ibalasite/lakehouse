@@ -48,6 +48,6 @@ SELECT
   updated_at
 
 -- Cross-catalog reference: always read from Iceberg gold regardless of target.
--- We bypass {{ ref() }} to avoid dbt resolving this to the mysql catalog.
+-- We bypass ref() to avoid dbt resolving this to the mysql catalog.
 FROM iceberg.gold.fact_ticket_day_wide
 WHERE prblm_date >= CURRENT_DATE - INTERVAL '730' DAY
