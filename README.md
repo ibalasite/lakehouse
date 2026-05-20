@@ -1,9 +1,9 @@
 # Local Data Lakehouse
 # 本地資料湖倉
 
-> A one-click Kubernetes demo of a full BI pipeline: MinIO → Iceberg → Polaris → Trino → MySQL → Metabase.
+> An EDD-compliant, one-click Kubernetes demo of a full streaming BI pipeline — synthetic data flows every 15 minutes from a Data Source POD through a Medallion Lakehouse (Bronze→Silver→Gold) to live Metabase dashboards.
 >
-> 一鍵在 Kubernetes 上執行的完整 BI pipeline 示範：MinIO → Iceberg → Polaris → Trino → MySQL → Metabase。
+> EDD 相容的一鍵 Kubernetes 串流 BI pipeline 示範 — 合成資料每 15 分鐘從資料來源 POD 流經 Medallion 架構（Bronze→Silver→Gold）至 Metabase 即時儀表板。
 
 [![Platform](https://img.shields.io/badge/platform-k8s%20k3s-blue)](https://k3s.io)
 [![Iceberg](https://img.shields.io/badge/Apache%20Iceberg-v2-blue?logo=apache)](https://iceberg.apache.org)
@@ -64,29 +64,33 @@ This repository is a **self-contained local data lakehouse** that demonstrates a
 
 | Layer | Component | Role |
 |---|---|---|
+| Data source | Data Source POD | Pure-stdlib Python HTTP server; generates 5–20 synthetic ticket rows every 5 min; exposes `/api/tickets/drain` |
 | Object storage | MinIO | S3-compatible store for Iceberg Parquet files |
 | Table format | Apache Iceberg v2 | ACID table management, schema evolution, time travel |
 | Catalog | Apache Polaris | Iceberg REST catalog with OAuth2 token issuance |
-| Query engine | Trino | Distributed SQL engine; reads Iceberg, writes MySQL |
+| Transform | dbt (Trino adapter) | Medallion models: Bronze stg → Silver stg → Gold daily + hourly facts + dims |
+| Query engine | Trino | Distributed SQL engine; runs dbt models, writes MySQL cache |
 | Cache | MySQL 8.0 | Pre-aggregated metrics tables consumed by Metabase |
-| Orchestration | Apache Airflow | Scheduled and on-demand DAGs for cache refresh |
-| BI | Metabase | Dashboard with 5 KPI charts over MySQL cache |
+| Orchestration | Apache Airflow | `lakehouse_streaming` (*/15 min) + `lakehouse_daily` (02:00) + backfill DAGs |
+| BI | Metabase | **客服問題單日報** (5 charts) + **即時監控** (3 cards, auto-refresh 15 min) |
 | Platform | k3s (Rancher Desktop) | Local Kubernetes with NodePort access |
 
 | 層次 | 元件 | 職責 |
 |---|---|---|
+| 資料來源 | Data Source POD | 純 stdlib Python HTTP 伺服器；每 5 分鐘產生 5–20 筆合成問題單；提供 `/api/tickets/drain` |
 | 物件儲存 | MinIO | 存放 Iceberg Parquet 檔案的 S3 相容存儲 |
 | 表格格式 | Apache Iceberg v2 | ACID 表格管理、結構演進、時間旅行 |
 | 目錄 | Apache Polaris | 具備 OAuth2 Token 發行的 Iceberg REST Catalog |
-| 查詢引擎 | Trino | 分散式 SQL 引擎；讀取 Iceberg，寫入 MySQL |
+| 轉換 | dbt（Trino adapter）| Medallion 模型：Bronze stg → Silver stg → Gold 日/時 fact + dim |
+| 查詢引擎 | Trino | 分散式 SQL 引擎；執行 dbt 模型，寫入 MySQL 快取 |
 | 快取 | MySQL 8.0 | Metabase 消費的預聚合指標表 |
-| 編排 | Apache Airflow | 排程與按需執行的快取刷新 DAG |
-| BI | Metabase | 基於 MySQL 快取的 5 張 KPI 圖表儀表板 |
+| 編排 | Apache Airflow | `lakehouse_streaming`（每 15 分）+ `lakehouse_daily`（02:00）+ 回填 DAG |
+| BI | Metabase | **客服問題單日報**（5 張圖）+ **即時監控**（3 張卡，15 分自動刷新）|
 | 平台 | k3s（Rancher Desktop）| 具備 NodePort 存取的本地 Kubernetes |
 
-**Seed data:** the stack generates ~200,000 rows of synthetic customer support tickets using `bulk_load_parquet.py` (pyiceberg direct write, bypassing Trino INSERT for speed). The data is purely synthetic — no real user data is included.
+**Seed data:** the stack generates ~200,000 rows of synthetic customer support tickets using `bulk_load_parquet.py` (pyiceberg direct write, bypassing Trino INSERT for speed). After the seed, the Data Source POD continuously generates 5–20 rows every 5 minutes; the `lakehouse_streaming` DAG ingests them every 15 minutes and propagates through the full Medallion pipeline.
 
-**種子資料：** 堆疊使用 `bulk_load_parquet.py` 生成約 20 萬筆合成客服問題單（pyiceberg 直接寫入，繞過 Trino INSERT 以提升速度）。資料為純合成，不含真實使用者資料。
+**種子資料：** 堆疊使用 `bulk_load_parquet.py` 生成約 20 萬筆合成客服問題單（pyiceberg 直接寫入，繞過 Trino INSERT 以提升速度）。種子完成後，Data Source POD 每 5 分鐘持續生成 5–20 筆資料；`lakehouse_streaming` DAG 每 15 分鐘攝入並推進整個 Medallion pipeline。
 
 ---
 
@@ -105,25 +109,38 @@ init_env.sh  →  .env (random credentials)
                ├── Trino  (UI :30080)
                ├── MySQL  (ClusterIP :3306 — use kubectl port-forward)
                ├── Airflow  (UI :30888)
-               └── Metabase  (UI :30300)
-                        │
+               ├── Metabase  (UI :30300)
+               └── Data Source POD  (ClusterIP :8080 — internal only)
+
                Jobs (run in order):
                01-minio-init       → creates lakehouse bucket
                02-polaris-bootstrap → registers catalog + principal
-               04-generate-tickets → bulk_load_parquet.py → Iceberg raw.raw_tickets
+               04-generate-tickets → bulk_load_parquet.py → Iceberg raw.raw_tickets (~200k rows seed)
                06-populate-cache   → populate_mysql_cache.py → MySQL cache tables
-               05-metabase-setup   → 05_metabase_setup.py → dashboard + 5 charts
+               05-metabase-setup   → 05_metabase_setup.py → 2 dashboards (日報 + 即時監控)
 ```
 
-**Data flow inside Trino / Trino 內部資料流：**
+**Streaming data flow (every 15 min) / 串流資料流（每 15 分）：**
 
 ```
-Iceberg raw.raw_tickets
-    │  (Trino aggregation SQL)
-    ├──> MySQL lakehouse_cache.cache_ticket_daily   (daily KPIs)
-    └──> MySQL lakehouse_cache.cache_ticket_hourly  (hourly granularity)
-                │
-                └──> Metabase dashboard queries
+Data Source POD
+  (generates 5–20 rows / 5 min)
+    │
+    │  GET /api/tickets/drain  (fetch_and_ingest.py via Airflow)
+    ▼
+Iceberg raw.raw_tickets  [Bronze]
+    │  dbt stg_bronze_tickets
+    ▼
+Iceberg silver.stg_silver_tickets  [Silver]
+    │  dbt fact_ticket_day_wide  +  fact_ticket_hour_wide
+    ▼
+Iceberg gold.*  [Gold]
+    │  populate_mysql_cache.py (--hourly-only)
+    ▼
+MySQL lakehouse_cache.cache_ticket_daily / cache_ticket_hourly
+    │
+    └──> Metabase  客服問題單日報  (5 charts, daily)
+    └──> Metabase  即時監控       (3 cards, auto-refresh 15 min)
 ```
 
 ---
@@ -252,8 +269,9 @@ The script performs these steps in order / 腳本依序執行：
 9. Deploys Trino
 10. Runs `04-generate-tickets` job: writes synthetic Iceberg data via `bulk_load_parquet.py`
 11. Deploys Airflow (webserver + scheduler)
-12. Deploys Metabase, then runs `05-metabase-setup` job to create the dashboard and 5 chart cards
-13. Prints the service URL summary
+12. Deploys Metabase, then runs `05-metabase-setup` job to create 2 dashboards (日報 + 即時監控)
+13. Deploys Data Source POD (`data-source` Deployment + ClusterIP Service)
+14. Prints the service URL summary
 
 **Watch deployment progress / 觀察部署進度：**
 
@@ -276,6 +294,7 @@ kubectl -n lakehouse logs job/metabase-setup -f
 NAME                          READY   STATUS      RESTARTS
 airflow-scheduler-*           1/1     Running     0
 airflow-webserver-*           1/1     Running     0
+data-source-*                 1/1     Running     0
 metabase-*                    1/1     Running     0
 minio-*                       1/1     Running     0
 mysql-*                       1/1     Running     0
@@ -447,7 +466,8 @@ Three DAGs are deployed automatically. All DAGs read credentials from Kubernetes
 
 | DAG | File | Schedule | Purpose |
 |---|---|---|---|
-| `lakehouse_daily` | `pipeline_daily.py` | `0 2 * * *` (02:00 UTC) | Full daily cache refresh: Trino aggregate → MySQL daily + hourly tables |
+| `lakehouse_streaming` | `pipeline_streaming.py` | `*/15 * * * *` | **Primary streaming DAG**: drain data-source pod → Bronze → Silver → dbt Gold hourly → MySQL hourly cache → Metabase refresh |
+| `lakehouse_daily` | `pipeline_daily.py` | `0 2 * * *` (02:00 UTC) | Full daily cache refresh: dbt Gold daily fact → MySQL daily + hourly tables |
 | `lakehouse_backfill` | `pipeline_backfill.py` | Manual trigger only | Accepts `start_date` / `end_date` conf for historical backfill |
 | `lakehouse_hourly` | `pipeline_hourly.py` | Manual trigger / smoke test | Refreshes today's hourly rows; used by `e2e_smoke_test.py` |
 
@@ -485,9 +505,13 @@ curl -s -X POST http://localhost:30888/api/v1/dags/lakehouse_backfill/dagRuns \
 **URL:** http://localhost:30300  
 **Login:** `admin@local.com` / value of `METABASE_ADMIN_PASSWORD` in `.env`
 
-The dashboard **客服問題單日報** contains 5 charts, all querying the MySQL `lakehouse_cache` database.
+Two dashboards are created automatically by `05_metabase_setup.py`.
 
-儀表板**客服問題單日報**含 5 張圖表，全部查詢 MySQL `lakehouse_cache` 資料庫。
+`05_metabase_setup.py` 自動建立兩個儀表板。
+
+### 客服問題單日報（Daily Report）
+
+5 charts querying the MySQL `lakehouse_cache` database.
 
 | Chart | Description |
 |---|---|
@@ -497,13 +521,18 @@ The dashboard **客服問題單日報** contains 5 charts, all querying the MySQ
 | Complaint ticket ratio | Trend of `complain_tickets / total_tickets` over time |
 | Average response and resolution time | Dual-metric chart: `avg_response_hours` and `avg_resolution_hours` |
 
-| 圖表 | 說明 |
+### 即時監控（Realtime Dashboard）
+
+Auto-refreshes every 15 minutes (`?refresh=900`). 3 cards fed by the `lakehouse_streaming` DAG:
+
+| Card | Description |
 |---|---|
-| 每日問題單量趨勢 | 折線圖：近 90 天每日新增問題單 |
-| 各子站問題單分布 | 長條圖：依 `catsub_id` 分組的問題單數量 |
-| SLA 達標分析 | 折線圖：`pct_within_sla` 含閾值參考線 |
-| 客訴問題單比例趨勢 | `complain_tickets / total_tickets` 的時間趨勢 |
-| 平均回覆與結案時效 | 雙指標圖：`avg_response_hours` 與 `avg_resolution_hours` |
+| 今日問題單即時動態 | Bar chart: today's ticket count grouped by hour (updated every 15 min) |
+| 各子站即時問題單分布 | Row chart: live sub-site breakdown from `cache_ticket_hourly` |
+| 今日每小時資料明細 | Table with `MAX(updated_at)` — lets you visually verify the pipeline wrote within the last 15 min |
+
+即時監控每 15 分鐘自動刷新，3 張卡片由 `lakehouse_streaming` DAG 提供資料。
+「今日每小時資料明細」中的「最後寫入時間」欄位可確認 pipeline 是否按時更新。
 
 If the dashboard is empty or charts show no data, re-run the setup job / 若儀表板空白或圖表無資料，重新執行 setup job：
 
@@ -664,58 +693,80 @@ All variables are generated by `init_env.sh`. You never need to set them manuall
 
 ```
 lakehouse/
-├── init_env.sh                          # Step 1: generate .env with random credentials
+├── init_env.sh                          # Step 1: generate .env (macOS/Linux)
+├── init_env.ps1                         # Step 1: generate .env (Windows PowerShell)
 ├── k8s/
-│   ├── deploy.sh                        # Step 2: deploy and orchestrate the full stack
-│   ├── namespace.yaml
-│   ├── pvc.yaml
-│   ├── minio.yaml
-│   ├── mysql.yaml
-│   ├── postgres.yaml
-│   ├── polaris.yaml
-│   ├── trino.yaml
-│   ├── airflow.yaml
-│   ├── metabase.yaml
+│   ├── deploy.sh                        # Step 2: one-click deploy (macOS/Linux)
+│   ├── deploy.ps1                       # Step 2: one-click deploy (Windows PowerShell)
+│   ├── data-source.yaml                 # Data Source POD: Deployment + ClusterIP Service
+│   ├── namespace.yaml / pvc.yaml
+│   ├── minio.yaml / mysql.yaml / postgres.yaml
+│   ├── polaris.yaml / trino.yaml
+│   ├── airflow.yaml / metabase.yaml
 │   ├── configmap-mysql-init.yaml        # MySQL schema DDL (no credentials)
 │   ├── configmap-trino.yaml             # Trino catalog config with ${VAR} placeholders
-│   ├── configmap-polaris.yaml
-│   ├── configmap-scope-proxy.yaml
+│   ├── configmap-polaris.yaml / configmap-scope-proxy.yaml
 │   └── jobs/
 │       ├── 01-minio-init.yaml           # Creates lakehouse bucket in MinIO
 │       ├── 02-polaris-bootstrap.yaml    # Registers Iceberg catalog and principal
-│       ├── 04-generate-tickets.yaml     # Runs bulk_load_parquet.py (seed data)
-│       ├── 05-metabase-setup.yaml       # Creates dashboard and 5 chart cards
+│       ├── 04-generate-tickets.yaml     # Runs bulk_load_parquet.py (seed ~200k rows)
+│       ├── 05-metabase-setup.yaml       # Creates 2 dashboards (日報 + 即時監控)
 │       └── 06-populate-cache.yaml       # Runs populate_mysql_cache.py
-└── platform/
-    ├── airflow/
-    │   └── dags/
-    │       ├── pipeline_daily.py        # lakehouse_daily DAG (02:00 UTC daily)
-    │       ├── pipeline_backfill.py     # lakehouse_backfill DAG (manual trigger)
-    │       └── pipeline_hourly.py       # lakehouse_hourly DAG (smoke test / manual)
-    └── init/
-        ├── 01_minio_init.sh             # MinIO bucket creation script
-        ├── 02_polaris_bootstrap.py      # Polaris catalog + principal registration
-        ├── 03_mysql_init.sql            # MySQL schema DDL: cache tables + partitions
-        ├── 04_generate_tickets.py       # Synthetic data generation (wraps bulk_load_parquet.py)
-        ├── bulk_load_parquet.py         # Fast Iceberg writer: pyiceberg direct write (~200k rows/sec)
-        ├── populate_mysql_cache.py      # Trino → MySQL aggregation (executemany batches)
-        ├── 05_metabase_setup.py         # Metabase dashboard creation via REST API
-        └── e2e_smoke_test.py            # End-to-end pipeline verification (6-step)
+├── platform/
+│   ├── data_source/
+│   │   └── app.py                       # Data Source POD: pure-stdlib HTTP server
+│   ├── airflow/
+│   │   ├── requirements.txt             # pyiceberg[s3], boto3, pyarrow
+│   │   └── dags/
+│   │       ├── pipeline_streaming.py    # lakehouse_streaming DAG (*/15 min) ← PRIMARY
+│   │       ├── pipeline_daily.py        # lakehouse_daily DAG (02:00 UTC daily)
+│   │       ├── pipeline_backfill.py     # lakehouse_backfill DAG (manual trigger)
+│   │       └── pipeline_hourly.py       # lakehouse_hourly DAG (smoke test / manual)
+│   └── init/
+│       ├── fetch_and_ingest.py          # Drain data-source pod → Iceberg via pyiceberg
+│       ├── bulk_load_parquet.py         # Fast seed writer (~200k–1M rows/sec)
+│       ├── populate_mysql_cache.py      # Trino → MySQL aggregation (executemany batches)
+│       ├── 05_metabase_setup.py         # Metabase 2-dashboard auto-setup via REST API
+│       └── e2e_smoke_test.py            # End-to-end pipeline verification (6-step)
+├── dbt/
+│   └── models/
+│       ├── staging/                     # stg_bronze_tickets, stg_silver_tickets
+│       └── gold/
+│           ├── facts/
+│           │   ├── fact_ticket_day_wide.sql   # daily aggregation (MERGE, incremental)
+│           │   └── fact_ticket_hour_wide.sql  # hourly aggregation (MERGE, trailing 24h)
+│           └── dims/                         # dim_date, dim_catsub, dim_perform, …
+└── contracts/
+    └── metrics/
+        ├── field_registry.yml           # EDD metric contract: 12 ticket KPI fields
+        └── namespace_registry.yml       # EDD namespace registry → iceberg.raw.raw_tickets
 ```
 
 **Key file notes / 關鍵檔案說明：**
 
-- `bulk_load_parquet.py` writes directly to Iceberg via pyiceberg and MinIO, bypassing Trino INSERT. This achieves approximately 200,000–1,000,000 rows per second on typical laptop hardware, compared to hundreds of rows per second via Trino INSERT VALUES.
-- `populate_mysql_cache.py` runs aggregation SQL on Trino and bulk-inserts into MySQL using `executemany` with 5,000-row batches. A full backfill typically completes in under 30 seconds.
+- `platform/data_source/app.py` is a pure-stdlib Python HTTP server with `enableServiceLinks: false` in its pod spec (prevents k8s from injecting `DATA_SOURCE_PORT=tcp://...` which would crash `int()` parsing). The pod generates 5–20 rows every 5 minutes into an in-memory deque; `GET /api/tickets/drain` atomically returns and clears the buffer.
+- `platform/init/fetch_and_ingest.py` polls `/api/tickets/drain`, converts ISO timestamps to microsecond epoch for PyArrow, and appends to `iceberg.raw.raw_tickets` via pyiceberg direct write. Called by the `lakehouse_streaming` DAG every 15 minutes.
+- `dbt/models/gold/facts/fact_ticket_hour_wide.sql` is an incremental MERGE model with a 7-dimension composite unique key; watermark covers the trailing 24 hours to absorb late silver updates.
+- `bulk_load_parquet.py` writes directly to Iceberg via pyiceberg and MinIO, bypassing Trino INSERT. This achieves approximately 200,000–1,000,000 rows per second on typical laptop hardware.
+- `populate_mysql_cache.py` runs aggregation SQL on Trino and bulk-inserts into MySQL using `executemany` with 5,000-row batches. Supports `--hourly-only` flag for the streaming DAG to skip daily table updates.
 - `configmap-trino.yaml` is the only YAML that requires envsubst. It contains `${POLARIS_CLIENT_ID}`, `${POLARIS_CLIENT_SECRET}`, `${MINIO_ROOT_USER}`, and `${MINIO_ROOT_PASSWORD}` placeholders that `deploy.sh` substitutes from `.env` using an inline Python script before applying.
 
-- `bulk_load_parquet.py` 透過 pyiceberg 和 MinIO 直接寫入 Iceberg，繞過 Trino INSERT。在典型筆電硬體上可達約 200,000–1,000,000 行/秒，相較 Trino INSERT VALUES 的數百行/秒快得多。
-- `populate_mysql_cache.py` 在 Trino 執行聚合 SQL，以 5,000 行批次透過 `executemany` 大量插入 MySQL。完整回填通常在 30 秒內完成。
-- `configmap-trino.yaml` 是唯一需要 envsubst 的 YAML。它含有 `${POLARIS_CLIENT_ID}`、`${POLARIS_CLIENT_SECRET}`、`${MINIO_ROOT_USER}` 和 `${MINIO_ROOT_PASSWORD}` 佔位符，`deploy.sh` 在套用前使用內嵌 Python 腳本從 `.env` 替換。
+- `platform/data_source/app.py` 是純 stdlib Python HTTP 伺服器，pod spec 設定 `enableServiceLinks: false`（防止 k8s 注入 `DATA_SOURCE_PORT=tcp://...` 造成 `int()` 解析崩潰）。pod 每 5 分鐘向記憶體 deque 生成 5–20 筆資料；`GET /api/tickets/drain` 原子性地返回並清除緩衝區。
+- `platform/init/fetch_and_ingest.py` 輪詢 `/api/tickets/drain`，將 ISO 時間戳轉換為 PyArrow 所需的微秒 epoch，並透過 pyiceberg 直接寫入追加至 `iceberg.raw.raw_tickets`。由 `lakehouse_streaming` DAG 每 15 分鐘呼叫。
+- `dbt/models/gold/facts/fact_ticket_hour_wide.sql` 是增量 MERGE 模型，具備 7 維複合 unique_key；水位線涵蓋過去 24 小時以吸收遲到的 silver 更新。
+- `bulk_load_parquet.py` 透過 pyiceberg 和 MinIO 直接寫入 Iceberg，在典型筆電硬體上可達約 200,000–1,000,000 行/秒。
+- `populate_mysql_cache.py` 在 Trino 執行聚合 SQL，以 5,000 行批次透過 `executemany` 大量插入 MySQL。支援 `--hourly-only` 旗標供串流 DAG 跳過日報表更新。
+- `configmap-trino.yaml` 是唯一需要 envsubst 的 YAML，`deploy.sh` 在套用前使用內嵌 Python 腳本從 `.env` 替換佔位符。
 
 ---
 
 ## Troubleshooting / 疑難排解
+
+### Data Source POD CrashLoopBackOff
+
+If the `data-source` pod crashes with `ValueError: invalid literal for int() with base 10: 'tcp://...'`, it means Kubernetes injected a `DATA_SOURCE_PORT=tcp://ClusterIP:8080` env var that overrides the app's own port variable. This was fixed by adding `enableServiceLinks: false` to the pod spec in `k8s/data-source.yaml`. Re-running `./k8s/deploy.sh --skip-seed` will apply the fix.
+
+若 `data-source` pod 出現 `ValueError: invalid literal for int() with base 10: 'tcp://...'` 崩潰，表示 k8s 注入了 `DATA_SOURCE_PORT=tcp://...` env var 覆蓋了應用程式自己的連接埠變數。此問題已透過在 `k8s/data-source.yaml` 的 pod spec 加入 `enableServiceLinks: false` 修正。重新執行 `./k8s/deploy.sh --skip-seed` 即可套用修正。
 
 ### Trino pod OOMKilled / Trino Pod OOMKilled
 
