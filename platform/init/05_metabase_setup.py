@@ -614,10 +614,10 @@ def create_trino_cards(
             "每日問題單量趨勢（Trino）",
             """
 SELECT
-  prblm_date                          AS 日期,
-  SUM(total_tickets)                  AS 總問題單數,
-  SUM(resolved_tickets)               AS 已結案數,
-  ROUND(AVG(pct_resolved), 1)         AS 結案率_pct
+  prblm_date                          AS "日期",
+  SUM(total_tickets)                  AS "總問題單數",
+  SUM(resolved_tickets)               AS "已結案數",
+  ROUND(AVG(pct_resolved), 1)         AS "結案率_pct"
 FROM iceberg.gold.fact_ticket_day_wide
 GROUP BY prblm_date
 ORDER BY prblm_date DESC
@@ -641,13 +641,13 @@ LIMIT 90
             "各子站問題單分布（Trino）",
             """
 SELECT
-  COALESCE(d.product_name, CAST(f.catsub_id AS VARCHAR)) AS 子站名稱,
-  SUM(f.total_tickets)                                    AS 總問題單數,
-  ROUND(AVG(f.pct_resolved), 1)                          AS 平均結案率
+  COALESCE(d.product_name, CAST(f.catsub_id AS VARCHAR)) AS "子站名稱",
+  SUM(f.total_tickets)                                    AS "總問題單數",
+  ROUND(AVG(f.pct_resolved), 1)                          AS "平均結案率"
 FROM iceberg.gold.fact_ticket_day_wide f
 LEFT JOIN iceberg.gold.dim_catsub d ON f.catsub_id = d.catsub_id
 GROUP BY f.catsub_id, d.product_name
-ORDER BY 總問題單數 DESC
+ORDER BY "總問題單數" DESC
             """.strip(),
             "直連 Iceberg Gold：各子站問題單量（JOIN dim_catsub）",
             "bar",
@@ -664,11 +664,11 @@ ORDER BY 總問題單數 DESC
             "SLA達標分析（Trino）",
             """
 SELECT
-  COALESCE(p.perform_name, CAST(f.prblm_perform_id AS VARCHAR)) AS SLA類型,
-  p.sla_hours                                                     AS SLA時效_hr,
-  SUM(f.total_tickets)                                           AS 總問題單數,
-  SUM(f.within_sla_tickets)                                      AS 時效內問題單數,
-  ROUND(AVG(f.pct_within_sla), 1)                                AS 平均達標率_pct
+  COALESCE(p.perform_name, CAST(f.prblm_perform_id AS VARCHAR)) AS "SLA類型",
+  p.sla_hours                                                     AS "SLA時效_hr",
+  SUM(f.total_tickets)                                           AS "總問題單數",
+  SUM(f.within_sla_tickets)                                      AS "時效內問題單數",
+  ROUND(AVG(f.pct_within_sla), 1)                                AS "平均達標率_pct"
 FROM iceberg.gold.fact_ticket_day_wide f
 LEFT JOIN iceberg.gold.dim_perform p ON f.prblm_perform_id = p.prblm_perform_id
 GROUP BY f.prblm_perform_id, p.perform_name, p.sla_hours
@@ -688,14 +688,14 @@ ORDER BY f.prblm_perform_id
             "客訴問題單比例趨勢（Trino）",
             """
 SELECT
-  prblm_date AS 日期,
-  SUM(total_tickets)    AS 總問題單數,
-  SUM(complain_tickets) AS 客訴問題單數,
+  prblm_date AS "日期",
+  SUM(total_tickets)    AS "總問題單數",
+  SUM(complain_tickets) AS "客訴問題單數",
   ROUND(
     100.0 * CAST(SUM(complain_tickets) AS DOUBLE)
     / NULLIF(CAST(SUM(total_tickets) AS DOUBLE), 0),
     2
-  )                     AS 客訴比例_pct
+  )                     AS "客訴比例_pct"
 FROM iceberg.gold.fact_ticket_day_wide
 GROUP BY prblm_date
 ORDER BY prblm_date DESC
@@ -716,10 +716,10 @@ LIMIT 60
             "平均回覆與結案時效（Trino）",
             """
 SELECT
-  prblm_date AS 日期,
-  ROUND(AVG(avg_response_hours), 1)   AS 平均回覆時效_hr,
-  ROUND(AVG(avg_resolution_hours), 1) AS 平均結案時效_hr,
-  ROUND(AVG(pct_one_shot), 1)         AS 一次結案率_pct
+  prblm_date AS "日期",
+  ROUND(AVG(avg_response_hours), 1)   AS "平均回覆時效_hr",
+  ROUND(AVG(avg_resolution_hours), 1) AS "平均結案時效_hr",
+  ROUND(AVG(pct_one_shot), 1)         AS "一次結案率_pct"
 FROM iceberg.gold.fact_ticket_day_wide
 WHERE avg_response_hours IS NOT NULL
 GROUP BY prblm_date
