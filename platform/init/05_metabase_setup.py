@@ -212,13 +212,13 @@ def add_trino_database(client: MetabaseClient) -> int:
     r = client.get("/database")
     if r.ok:
         for db in r.json().get("data", r.json() if isinstance(r.json(), list) else []):
-            if db.get("engine") == "presto" and db.get("name") == "Lakehouse Gold (Trino)":
+            if db.get("engine") == "presto-jdbc" and db.get("name") == "Lakehouse Gold (Trino)":
                 log.info("Trino database already exists with id=%d.", db["id"])
                 return db["id"]
 
-    log.info("Adding Trino database connection (Presto driver) …")
+    log.info("Adding Trino database connection (presto-jdbc driver) …")
     payload = {
-        "engine": "presto",
+        "engine": "presto-jdbc",
         "name": "Lakehouse Gold (Trino)",
         "details": {
             "host": TRINO_HOST,

@@ -13,6 +13,7 @@ data:
     query.max-execution-time=30m
     query.max-run-time=60m
     discovery.uri=http://localhost:8080
+    protocol.v1.alternate-header-name=Presto
 
   jvm.config: |
     -server
