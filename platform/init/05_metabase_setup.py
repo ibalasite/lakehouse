@@ -770,14 +770,14 @@ def create_trino_realtime_cards(
             "今日問題單即時動態（Trino）",
             """
 SELECT
-  LPAD(CAST(prblm_hour AS VARCHAR), 2, '0') || ':00' AS 時段,
-  SUM(total_tickets)    AS 總問題單數,
-  SUM(resolved_tickets) AS 已結案數,
+  LPAD(CAST(prblm_hour AS VARCHAR), 2, '0') || ':00' AS "時段",
+  SUM(total_tickets)    AS "總問題單數",
+  SUM(resolved_tickets) AS "已結案數",
   ROUND(
     100.0 * CAST(SUM(resolved_tickets) AS DOUBLE)
     / NULLIF(CAST(SUM(total_tickets) AS DOUBLE), 0),
     1
-  ) AS 結案率_pct
+  ) AS "結案率_pct"
 FROM iceberg.gold.fact_ticket_hour_wide
 WHERE prblm_date = CURRENT_DATE
 GROUP BY prblm_hour
@@ -807,18 +807,18 @@ SELECT
     WHEN 5 THEN '旅遊(台灣)'  WHEN 6 THEN '票券(台灣)'
     WHEN 7 THEN '金融(台灣)'  WHEN 8 THEN '企業(台灣)'
     WHEN 9 THEN '廣告(台灣)'  ELSE '其他'
-  END                              AS 子站名稱,
-  SUM(total_tickets)               AS 今日問題單數,
-  SUM(within_sla_tickets)          AS 時效內問題單數,
+  END                              AS "子站名稱",
+  SUM(total_tickets)               AS "今日問題單數",
+  SUM(within_sla_tickets)          AS "時效內問題單數",
   ROUND(
     100.0 * CAST(SUM(within_sla_tickets) AS DOUBLE)
     / NULLIF(CAST(SUM(total_tickets) AS DOUBLE), 0),
     1
-  ) AS SLA達標率_pct
+  ) AS "SLA達標率_pct"
 FROM iceberg.gold.fact_ticket_hour_wide
 WHERE prblm_date = CURRENT_DATE
 GROUP BY catsub_id
-ORDER BY 今日問題單數 DESC
+ORDER BY "今日問題單數" DESC
             """.strip(),
             "直連 Iceberg Gold：今日各子站問題單量與SLA達標率（即時查詢）",
             "row",
@@ -834,16 +834,16 @@ ORDER BY 今日問題單數 DESC
             "今日每小時資料明細（Trino）",
             """
 SELECT
-  LPAD(CAST(prblm_hour AS VARCHAR), 2, '0') AS 小時,
-  SUM(total_tickets)     AS 問題單數,
-  SUM(resolved_tickets)  AS 結案數,
-  SUM(within_sla_tickets) AS 時效內,
+  LPAD(CAST(prblm_hour AS VARCHAR), 2, '0') AS "小時",
+  SUM(total_tickets)      AS "問題單數",
+  SUM(resolved_tickets)   AS "結案數",
+  SUM(within_sla_tickets) AS "時效內",
   ROUND(
     100.0 * CAST(SUM(resolved_tickets) AS DOUBLE)
     / NULLIF(CAST(SUM(total_tickets) AS DOUBLE), 0),
     1
-  )                      AS 結案率_pct,
-  MAX(updated_at)        AS 最後寫入時間
+  )                       AS "結案率_pct",
+  MAX(updated_at)         AS "最後寫入時間"
 FROM iceberg.gold.fact_ticket_hour_wide
 WHERE prblm_date = CURRENT_DATE
 GROUP BY prblm_hour
