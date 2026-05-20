@@ -498,6 +498,33 @@ ORDER BY 今日問題單數 DESC
                 "series_settings": {"今日問題單數": {"color": "#509EE3"}},
             },
         ),
+        (
+            "今日每小時資料明細（Pipeline 驗證）",
+            """
+SELECT
+  LPAD(hour_of_day, 2, '0')              AS 小時,
+  SUM(total_tickets)                     AS 問題單數,
+  SUM(resolved_tickets)                  AS 結案數,
+  SUM(within_sla_tickets)                AS 時效內,
+  ROUND(
+    100.0 * SUM(resolved_tickets)
+    / NULLIF(SUM(total_tickets), 0), 1
+  )                                      AS 結案率_pct,
+  DATE_FORMAT(MAX(updated_at), '%H:%i:%s') AS 最後寫入時間
+FROM cache_ticket_hourly
+WHERE date_sk = CURDATE()
+GROUP BY hour_of_day
+ORDER BY hour_of_day
+            """.strip(),
+            "今日各小時詳細資料，含最後寫入時間，可確認每15分鐘 Pipeline 是否正常運作",
+            "table",
+            {
+                "table.pivot": False,
+                "column_settings": {
+                    '["name","最後寫入時間"]': {"column_title": "最後寫入時間 ⟳"},
+                },
+            },
+        ),
     ]
 
     card_ids: list[int] = []
