@@ -14,10 +14,12 @@ data:
     query.max-run-time=60m
     discovery.uri=http://localhost:8080
     protocol.v1.alternate-header-name=Presto
+    sql.forced-session-time-zone=${TZ}
 
   jvm.config: |
     -server
     -Xmx1250m
+    -Duser.timezone=Asia/Taipei
     -XX:InitialRAMPercentage=30
     -XX:MaxRAMPercentage=75
     -XX:G1HeapRegionSize=16M
@@ -56,6 +58,6 @@ data:
 
   mysql.properties: |
     connector.name=mysql
-    connection-url=jdbc:mysql://mysql:3306?serverTimezone=UTC&characterEncoding=utf8mb4
+    connection-url=jdbc:mysql://mysql:3306?serverTimezone=Asia/Taipei&characterEncoding=utf8mb4
     connection-user=lakehouse
     connection-password=${MYSQL_PASSWORD}

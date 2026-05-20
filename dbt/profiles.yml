@@ -10,6 +10,7 @@ lakehouse:
       schema: raw
       threads: 4
       prepared_statements_enabled: false
+      timezone: "{{ env_var('TZ', 'Asia/Taipei') }}"
     prod:
       type: trino
       method: none
@@ -20,6 +21,7 @@ lakehouse:
       schema: raw
       threads: 8
       prepared_statements_enabled: false
+      timezone: "{{ env_var('TZ', 'Asia/Taipei') }}"
     mysql_cache:
       type: trino
       method: none
@@ -30,3 +32,4 @@ lakehouse:
       schema: lakehouse_cache
       threads: 2
       prepared_statements_enabled: false
+      timezone: "{{ env_var('TZ', 'Asia/Taipei') }}"

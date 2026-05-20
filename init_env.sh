@@ -85,6 +85,10 @@ METABASE_PORT=3000
 METABASE_URL=http://localhost:3000
 METABASE_ADMIN_EMAIL=admin@local.com
 METABASE_ADMIN_PASSWORD=${METABASE_ADMIN_PASSWORD}
+
+# ── 時區（所有服務共用） ──────────────────────
+# 修改此處即可統一調整所有服務的時區
+TZ=Asia/Taipei
 EOF
 
 chmod 600 "$ENV_FILE"

@@ -31,7 +31,7 @@
 WITH silver AS (
   SELECT
     prblm_date,
-    CAST(EXTRACT(HOUR FROM prblm_sysdate) AS INTEGER) AS prblm_hour,
+    CAST(EXTRACT(HOUR FROM (prblm_sysdate AT TIME ZONE 'Asia/Taipei')) AS INTEGER) AS prblm_hour,
     catsub_id,
     prblm_source_id,
     prblm_class_id,
@@ -46,7 +46,7 @@ WITH silver AS (
     response_hours
   FROM {{ ref('stg_silver_tickets') }}
   {% if is_incremental() %}
-  WHERE prblm_date >= CURRENT_DATE - INTERVAL '1' DAY
+  WHERE prblm_date >= CAST(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei' AS DATE) - INTERVAL '1' DAY
   {% endif %}
 )
 

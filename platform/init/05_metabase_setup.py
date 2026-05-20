@@ -1123,7 +1123,14 @@ def main() -> None:
     else:
         login(client)
 
-    # 3. Add MySQL database
+    # 3. Set Metabase report timezone to Asia/Taipei
+    r = client.put("/setting/report-timezone", {"value": "Asia/Taipei"})
+    if r.ok:
+        log.info("Report timezone set to Asia/Taipei.")
+    else:
+        log.warning("Could not set report timezone: %s", r.text)
+
+    # 5. Add MySQL database
     db_id = add_mysql_database(client)
     wait_for_sync(client, db_id, timeout=120)
 

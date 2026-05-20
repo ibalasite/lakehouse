@@ -120,6 +120,12 @@ spec:
           image: apache/airflow:2.9.1
           command: ["airflow", "scheduler"]
           env:
+            - name: TZ
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: TZ}
+            - name: AIRFLOW__CORE__DEFAULT_TIMEZONE
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: TZ}
             - name: PYTHONPATH
               value: /pip-packages
             - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
@@ -244,6 +250,12 @@ spec:
           image: apache/airflow:2.9.1
           command: ["airflow", "webserver", "--worker-timeout", "600"]
           env:
+            - name: TZ
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: TZ}
+            - name: AIRFLOW__CORE__DEFAULT_TIMEZONE
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: TZ}
             - name: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN
               valueFrom:
                 secretKeyRef: {name: lakehouse-secrets, key: AIRFLOW__DATABASE__SQL_ALCHEMY_CONN}

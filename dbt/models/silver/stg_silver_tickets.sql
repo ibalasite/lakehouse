@@ -156,8 +156,8 @@ silver AS (
 
     CASE WHEN prblm_forwarddatetime IS NOT NULL THEN 1 ELSE 0 END AS is_forwarded,
 
-    -- DATE partition key used by gold fact aggregations
-    CAST(prblm_sysdate AS DATE)                               AS prblm_date,
+    -- DATE partition key used by gold fact aggregations (Asia/Taipei)
+    CAST(prblm_sysdate AT TIME ZONE 'Asia/Taipei' AS DATE)    AS prblm_date,
 
     -- ── Pipeline metadata ────────────────────────────────────────────────────
     ingested_at,
