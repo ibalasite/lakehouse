@@ -40,7 +40,10 @@ SELECT
   CASE WHEN day_of_week(date_sk) IN (6, 7) THEN 1 ELSE 0 END     AS is_weekend,
   LPAD(CAST(year(date_sk)  AS VARCHAR), 4, '0')
     || LPAD(CAST(month(date_sk) AS VARCHAR), 2, '0')             AS year_month,
-  format_datetime(date_sk, 'yyyy-Q')                              AS year_quarter
+  CAST(year(date_sk) AS VARCHAR)
+    || '-Q'
+    || CAST(CAST(CEIL(CAST(month(date_sk) AS DOUBLE) / 3) AS INTEGER) AS VARCHAR)
+                                                                  AS year_quarter
 
 FROM date_spine
 ORDER BY date_sk

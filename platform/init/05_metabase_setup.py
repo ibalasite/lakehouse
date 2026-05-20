@@ -759,6 +759,119 @@ LIMIT 30
     return card_ids
 
 
+def create_trino_realtime_cards(
+    client: MetabaseClient,
+    collection_id: int,
+    db_id: int,
+) -> list[int]:
+    """Create hourly real-time cards from iceberg.gold.fact_ticket_hour_wide."""
+    cards = [
+        (
+            "今日問題單即時動態（Trino）",
+            """
+SELECT
+  LPAD(CAST(prblm_hour AS VARCHAR), 2, '0') || ':00' AS 時段,
+  SUM(total_tickets)    AS 總問題單數,
+  SUM(resolved_tickets) AS 已結案數,
+  ROUND(
+    100.0 * CAST(SUM(resolved_tickets) AS DOUBLE)
+    / NULLIF(CAST(SUM(total_tickets) AS DOUBLE), 0),
+    1
+  ) AS 結案率_pct
+FROM iceberg.gold.fact_ticket_hour_wide
+WHERE prblm_date = CURRENT_DATE
+GROUP BY prblm_hour
+ORDER BY prblm_hour
+            """.strip(),
+            "直連 Iceberg Gold：今日各小時問題單量與結案率（即時查詢）",
+            "bar",
+            {
+                "graph.dimensions":        ["時段"],
+                "graph.metrics":           ["總問題單數", "已結案數"],
+                "graph.x_axis.title_text": "時段",
+                "graph.y_axis.title_text": "問題單數",
+                "graph.show_values":       True,
+                "series_settings": {
+                    "總問題單數": {"color": "#509EE3", "display": "bar"},
+                    "已結案數":   {"color": "#88BF4D", "display": "bar"},
+                },
+            },
+        ),
+        (
+            "各子站即時問題單分布（Trino）",
+            """
+SELECT
+  CASE catsub_id
+    WHEN 1 THEN '購物(台灣)'  WHEN 2 THEN '購物(香港)'
+    WHEN 3 THEN '拍賣(台灣)'  WHEN 4 THEN '超市(台灣)'
+    WHEN 5 THEN '旅遊(台灣)'  WHEN 6 THEN '票券(台灣)'
+    WHEN 7 THEN '金融(台灣)'  WHEN 8 THEN '企業(台灣)'
+    WHEN 9 THEN '廣告(台灣)'  ELSE '其他'
+  END                              AS 子站名稱,
+  SUM(total_tickets)               AS 今日問題單數,
+  SUM(within_sla_tickets)          AS 時效內問題單數,
+  ROUND(
+    100.0 * CAST(SUM(within_sla_tickets) AS DOUBLE)
+    / NULLIF(CAST(SUM(total_tickets) AS DOUBLE), 0),
+    1
+  ) AS SLA達標率_pct
+FROM iceberg.gold.fact_ticket_hour_wide
+WHERE prblm_date = CURRENT_DATE
+GROUP BY catsub_id
+ORDER BY 今日問題單數 DESC
+            """.strip(),
+            "直連 Iceberg Gold：今日各子站問題單量與SLA達標率（即時查詢）",
+            "row",
+            {
+                "graph.dimensions":        ["子站名稱"],
+                "graph.metrics":           ["今日問題單數"],
+                "graph.x_axis.title_text": "問題單數",
+                "graph.show_values":       True,
+                "series_settings": {"今日問題單數": {"color": "#509EE3"}},
+            },
+        ),
+        (
+            "今日每小時資料明細（Trino）",
+            """
+SELECT
+  LPAD(CAST(prblm_hour AS VARCHAR), 2, '0') AS 小時,
+  SUM(total_tickets)     AS 問題單數,
+  SUM(resolved_tickets)  AS 結案數,
+  SUM(within_sla_tickets) AS 時效內,
+  ROUND(
+    100.0 * CAST(SUM(resolved_tickets) AS DOUBLE)
+    / NULLIF(CAST(SUM(total_tickets) AS DOUBLE), 0),
+    1
+  )                      AS 結案率_pct,
+  MAX(updated_at)        AS 最後寫入時間
+FROM iceberg.gold.fact_ticket_hour_wide
+WHERE prblm_date = CURRENT_DATE
+GROUP BY prblm_hour
+ORDER BY prblm_hour
+            """.strip(),
+            "直連 Iceberg Gold：今日各小時詳細資料，含最後寫入時間",
+            "table",
+            {
+                "table.pivot": False,
+                "column_settings": {
+                    '["name","最後寫入時間"]': {"column_title": "最後寫入時間 ⟳"},
+                },
+            },
+        ),
+    ]
+
+    card_ids: list[int] = []
+    for name, sql, description, display, viz_settings in cards:
+        cid = create_card(
+            client, collection_id, name, sql, db_id,
+            description=description,
+            display=display,
+            visualization_settings=viz_settings,
+        )
+        card_ids.append(cid)
+    return card_ids
+
+
 def create_trino_dashboard(
     client: MetabaseClient,
     collection_id: int,
@@ -771,7 +884,20 @@ def create_trino_dashboard(
         for dash in items:
             if dash.get("name") == dash_name:
                 dash_id = dash["id"]
-                log.info("Dashboard '%s' already exists (id=%d).", dash_name, dash_id)
+                log.info("Dashboard '%s' already exists (id=%d) — re-syncing cards.", dash_name, dash_id)
+                existing = client.get(f"/dashboard/{dash_id}")
+                existing_cards = existing.json().get("dashcards", []) if existing.ok else []
+                if len(existing_cards) != len(card_ids):
+                    col_width, row_height = 12, 8
+                    dashcards = [
+                        {"id": str(-(i+1)), "card_id": cid,
+                         "row": (i//2)*row_height, "col": (i%2)*col_width,
+                         "size_x": col_width, "size_y": row_height,
+                         "parameter_mappings": [], "visualization_settings": {}}
+                        for i, cid in enumerate(card_ids)
+                    ]
+                    client.put(f"/dashboard/{dash_id}", {"dashcards": dashcards})
+                    log.info("  Cards re-synced.")
                 return dash_id
 
     log.info("Creating dashboard '%s' …", dash_name)
@@ -801,6 +927,52 @@ def create_trino_dashboard(
     r2 = client.put(f"/dashboard/{dash_id}", {"dashcards": dashcards})
     client._raise(r2, f"PUT /dashboard/{dash_id}")
     log.info("  Dashboard '%s' created (id=%d) with %d cards.", dash_name, dash_id, len(card_ids))
+    return dash_id
+
+
+def _create_trino_realtime_dashboard(
+    client: MetabaseClient,
+    collection_id: int,
+    card_ids: list[int],
+) -> int:
+    dash_name = "客服問題單即時看板（Trino）"
+    r = client.get(f"/dashboard?collection_id={collection_id}")
+    if r.ok:
+        items = r.json() if isinstance(r.json(), list) else r.json().get("data", [])
+        for dash in items:
+            if dash.get("name") == dash_name:
+                dash_id = dash["id"]
+                log.info("Dashboard '%s' already exists (id=%d).", dash_name, dash_id)
+                return dash_id
+
+    log.info("Creating Trino real-time dashboard '%s' …", dash_name)
+    r = client.post("/dashboard", {
+        "name":        dash_name,
+        "description": "直連 Iceberg Gold 的即時問題單看板（來源：fact_ticket_hour_wide）",
+        "collection_id": collection_id,
+        "parameters": [],
+        "cache_ttl": 900,
+    })
+    client._raise(r, f"POST /dashboard ({dash_name})")
+    dash_id = r.json()["id"]
+
+    col_width, row_height = 24, 8
+    dashcards = [
+        {
+            "id":                     str(-(i + 1)),
+            "card_id":                cid,
+            "row":                    i * row_height,
+            "col":                    0,
+            "size_x":                 col_width,
+            "size_y":                 row_height,
+            "parameter_mappings":     [],
+            "visualization_settings": {},
+        }
+        for i, cid in enumerate(card_ids)
+    ]
+    r2 = client.put(f"/dashboard/{dash_id}", {"dashcards": dashcards})
+    client._raise(r2, f"PUT /dashboard/{dash_id} (trino realtime dashcards)")
+    log.info("  Trino real-time dashboard created (id=%d) with %d cards.", dash_id, len(card_ids))
     return dash_id
 
 
@@ -974,11 +1146,14 @@ def main() -> None:
     trino_db_id = add_trino_database(client)
     if trino_db_id > 0:
         wait_for_sync(client, trino_db_id, timeout=60)
-        trino_coll_id  = create_trino_collection(client)
-        trino_card_ids = create_trino_cards(client, trino_coll_id, trino_db_id)
-        trino_dash_id  = create_trino_dashboard(client, trino_coll_id, trino_card_ids)
+        trino_coll_id      = create_trino_collection(client)
+        trino_card_ids     = create_trino_cards(client, trino_coll_id, trino_db_id)
+        trino_dash_id      = create_trino_dashboard(client, trino_coll_id, trino_card_ids)
+        trino_rt_card_ids  = create_trino_realtime_cards(client, trino_coll_id, trino_db_id)
+        trino_rt_dash_id   = _create_trino_realtime_dashboard(client, trino_coll_id, trino_rt_card_ids)
     else:
         trino_coll_id, trino_card_ids, trino_dash_id = -1, [], -1
+        trino_rt_card_ids, trino_rt_dash_id = [], -1
 
     # 10. Print summary
     base = args.metabase_url.rstrip("/")
@@ -991,13 +1166,14 @@ def main() -> None:
     print(f"  [MySQL] Realtime (15 min auto) : {rt_dash_url}")
     if trino_dash_id > 0:
         print(f"  [Trino] Daily dashboard        : {base}/dashboard/{trino_dash_id}")
+        print(f"  [Trino] Realtime (15 min auto) : {base}/dashboard/{trino_rt_dash_id}?refresh=900")
     else:
         print("  [Trino] Skipped (Presto driver unavailable)")
     print(f"  Login             : {ADMIN_EMAIL} / {ADMIN_PASSWORD}")
     print(f"  MySQL collection  : 問題單分析 (id={collection_id})")
     print(f"  Trino collection  : 問題單分析（Trino）(id={trino_coll_id})")
-    print(f"  MySQL cards       : {len(card_ids)} daily + {len(rt_card_ids)} realtime")
-    print(f"  Trino cards       : {len(trino_card_ids)}")
+    print(f"  MySQL cards       : {len(card_ids)} daily + {len(rt_card_ids)} realtime = {len(card_ids)+len(rt_card_ids)} total")
+    print(f"  Trino cards       : {len(trino_card_ids)} daily + {len(trino_rt_card_ids)} realtime = {len(trino_card_ids)+len(trino_rt_card_ids)} total")
     print("=" * 60)
 
 

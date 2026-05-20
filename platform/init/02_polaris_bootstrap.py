@@ -183,6 +183,8 @@ def create_catalog(token: str) -> None:
         "properties": {
             # EDD section 6.2: s3://lakehouse-local/warehouse/<namespace>/...
             "default-base-location": f"s3://{MINIO_BUCKET}/warehouse/",
+            # Required for dbt table materializations that drop __dbt_backup tables
+            "polaris.config.drop-with-purge.enabled": "true",
         },
         "storageConfigInfo": {
             "storageType": "S3",
