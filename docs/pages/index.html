@@ -516,29 +516,39 @@
 
     <h3>Streaming data flow (every 15 min) / 串流資料流（每 15 分）</h3>
 <pre><code class="language-text">Data Source POD  (generates 5–20 rows / 5 min)
-    │
     │  GET /api/tickets/drain  ← fetch_and_ingest.py via Airflow lakehouse_streaming
     ▼
 Iceberg bronze.raw_tickets  [Bronze]
-    │  dbt stg_bronze_tickets  (incremental append)
+    │  dbt stg_bronze_tickets (incremental append)
     ▼
 Iceberg silver.stg_silver_tickets  [Silver]
-    │  populate_mysql_cache.py --streaming
-    │  (aggregates today's rows directly from silver; ≤500 rows, ~3s — no gold MERGE)
+    │  dbt fact_ticket_hour_long  (append-only EAV, watermark)
     ▼
-MySQL cache_ticket_hourly
-    └──> Metabase 即時監控  (3 cards, auto-refresh 15 min)
+Iceberg gold.fact_ticket_hour_long  [Gold — EAV]
+    │  dbt fact_ticket_hour_wide  (PIVOT MERGE from hour_long delta)
+    ▼
+Iceberg gold.fact_ticket_hour_wide  [Gold — Wide]
+    │  dbt cache_daily_report  (Lambda UNION ALL: D-1 + today)
+    │    ├─ --target prod        → iceberg.cache.cache_daily_report
+    │    └─ --target mysql_cache → mysql.lakehouse_cache.cache_daily_report
+    │  populate_mysql_cache.py --streaming (reads hour_wide → cache_ticket_hourly)
+    ▼
+MySQL lakehouse_cache.cache_daily_report / cache_ticket_hourly
+    └──&gt; Metabase  即時監控  (auto-refresh 15 min)
 
-Daily data flow (02:00) / 每日資料流（02:00）
+Daily data flow (02:00 daily):
+
 Iceberg silver.stg_silver_tickets  [Silver]
-    │  dbt fact_ticket_day_wide  +  fact_ticket_hour_wide  (MERGE)
+    │  dbt Gold dims (full replace)
+    │  dbt fact_ticket_hour_long → hour_wide → day_wide → month_wide
     ▼
-Iceberg gold.*  [Gold]
-    │  populate_mysql_cache.py (full rebuild)
+Iceberg gold.*  [Gold — 5 dims + 4 facts]
+    │  dbt cache_ticket_daily + cache_daily_report  (dual-target EDD §13.2b)
+    │    ├─ --target prod        → iceberg.cache.*
+    │    └─ --target mysql_cache → mysql.lakehouse_cache.*
     ▼
-MySQL cache_ticket_daily / cache_ticket_hourly
-    ├──> Metabase 客服問題單日報 (5 charts, daily)
-    └──> Metabase 即時監控      (3 cards)</code></pre>
+MySQL lakehouse_cache.*
+    └──&gt; Metabase  客服問題單日報 + 即時監控</code></pre>
   </section>
 
   <!-- ─── 2b. Project Goals ───────────────────────────────────────────── -->
@@ -550,13 +560,13 @@ MySQL cache_ticket_daily / cache_ticket_hourly
     <ol>
       <li><strong>Data Source POD</strong> generates 5–20 synthetic ticket rows every <strong>5 minutes</strong></li>
       <li><strong><code>lakehouse_streaming</code> DAG</strong> runs every <strong>15 minutes</strong> and completes all tasks:<br>
-        <code>ingest_from_source → dbt_bronze → dbt_silver → populate_hourly_cache → verify_dashboard</code>
+        <code>ingest_from_source → dbt_bronze → dbt_silver → dbt_hour_long → dbt_hour_wide → cache_daily_report (Iceberg + MySQL) → populate_hourly_cache → verify_dashboard</code>
       </li>
       <li><strong>Metabase 即時監控</strong> auto-refreshes every 15 minutes and shows continuously increasing ticket counts for today</li>
     </ol>
-    <p><strong>Acceptance:</strong> open Metabase, watch <code>cache_ticket_hourly</code> row counts grow every 15 min.</p>
+    <p><strong>Acceptance:</strong> open Metabase, watch <code>cache_daily_report</code> row counts grow every 15 min.</p>
 
-    <p>本專案的端對端 pipeline 必須在無人工干預的情況下可在 Metabase 觀測：Data Source POD 每 5 分鐘產生資料，<code>lakehouse_streaming</code> DAG 每 15 分鐘攝入並推進至 MySQL cache，Metabase 即時監控每 15 分鐘自動刷新顯示持續增加的今日問題單數量。</p>
+    <p>本專案的端對端 pipeline 必須在無人工干預的情況下可在 Metabase 觀測：Data Source POD 每 5 分鐘產生資料，<code>lakehouse_streaming</code> DAG 每 15 分鐘推進 Bronze→Silver→Gold（hour_long→hour_wide）→Cache MV（Iceberg + MySQL 雙目標）→Metabase，即時監控每 15 分鐘自動刷新顯示持續增加的今日問題單數量。</p>
 
     <h3>Goal 2 — Credential Output Script <span class="zh">憑證輸出腳本</span></h3>
     <p>After <code>deploy.sh</code> completes, <strong>all service URLs and credentials must be printed to the console</strong> in a structured format separated by access method (WEB UIs / Pod CLI / ClusterIP services).</p>
@@ -816,13 +826,13 @@ All checks passed.
           <td><code>lakehouse_streaming</code></td>
           <td><code>pipeline_streaming.py</code></td>
           <td><code>*/15 * * * *</code></td>
-          <td><strong>Primary streaming DAG:</strong> drain data-source pod → Bronze (append) → Silver (append) → MySQL hourly cache (<code>--streaming</code>, aggregate from silver today) → Metabase refresh</td>
+          <td><strong>Primary streaming DAG:</strong> ingest → Bronze → Silver → Gold hour_long (append-only EAV) → Gold hour_wide (PIVOT MERGE) → <code>cache_daily_report</code> (Iceberg + MySQL dual-target) → populate_hourly_cache (reads <code>fact_ticket_hour_wide</code>) → verify</td>
         </tr>
         <tr>
           <td><code>lakehouse_daily</code></td>
           <td><code>pipeline_daily.py</code></td>
           <td><code>0 2 * * *</code></td>
-          <td>Full daily cache refresh: dbt Gold daily fact → MySQL daily + hourly tables</td>
+          <td>Full daily Gold + Cache: dims → hour_long → hour_wide → day_wide → month_wide → <code>cache_ticket_daily</code> + <code>cache_daily_report</code> each dual-target (<code>--target prod</code> Iceberg then <code>--target mysql_cache</code> MySQL)</td>
         </tr>
         <tr>
           <td><code>lakehouse_backfill</code></td>
@@ -1052,9 +1062,14 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "changeme")  # WRONG — never
 │   ├── silver/                          # stg_silver_tickets (PII mask, SLA flags)
 │   └── gold/
 │       ├── facts/
-│       │   ├── fact_ticket_day_wide.sql # daily MERGE fact (incremental)
-│       │   └── fact_ticket_hour_wide.sql# hourly MERGE fact (trailing 24h watermark)
-│       └── dims/                        # dim_date, dim_catsub, dim_perform, …
+│       │   ├── fact_ticket_hour_long.sql# EAV narrow fact (append-only, watermark)
+│       │   ├── fact_ticket_hour_wide.sql# PIVOT MERGE from hour_long delta (24h)
+│       │   ├── fact_ticket_day_wide.sql # daily MERGE from hour_wide (7-day lookback)
+│       │   └── fact_ticket_month_wide.sql# monthly MERGE from day_wide (2-month)
+│       └── dims/                         # dim_date, dim_catsub, dim_perform, dim_prblm_source, dim_prblm_status
+│   └── cache/
+│       ├── cache_ticket_daily.sql        # 730-day pre-joined flat (dual-target Iceberg+MySQL)
+│       └── cache_daily_report.sql        # Lambda UNION ALL MV (primary Metabase source)
 └── contracts/metrics/
     ├── field_registry.yml               # EDD metric contract: 12 ticket KPI fields
     └── namespace_registry.yml           # EDD namespace → iceberg.bronze.raw_tickets</code></pre>
@@ -1063,9 +1078,11 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "changeme")  # WRONG — never
     <ul>
       <li><strong><code>platform/data_source/app.py</code></strong> is a pure-stdlib Python HTTP server with <code>enableServiceLinks: false</code> in its pod spec to prevent k8s from injecting <code>DATA_SOURCE_PORT=tcp://...</code> which would crash <code>int()</code> parsing. The pod generates 5–20 rows every 5 minutes into a thread-safe in-memory deque; <code>GET /api/tickets/drain</code> atomically returns and clears the buffer.</li>
       <li><strong><code>platform/init/fetch_and_ingest.py</code></strong> polls <code>/api/tickets/drain</code>, converts ISO timestamps to microsecond epoch for PyArrow, and appends to <code>iceberg.bronze.raw_tickets via pyiceberg direct write. Called every 15 minutes by <code>lakehouse_streaming</code>.</li>
-      <li><strong><code>dbt/models/gold/facts/fact_ticket_hour_wide.sql</code></strong> is an incremental MERGE model with a 7-dimension composite unique key; watermark covers the trailing 24 hours to absorb late silver updates.</li>
+      <li><strong><code>dbt/models/gold/facts/fact_ticket_hour_long.sql</code></strong> is an append-only EAV narrow fact (one row per grain×field_code). Reads silver via <code>prblm_sysdate &gt; MAX(updated_at) - 1 minute</code> — zero full-table scan, safe for 15-min streaming.</li>
+      <li><strong><code>dbt/models/gold/facts/fact_ticket_hour_wide.sql</code></strong> is an incremental PIVOT MERGE reading only delta rows from <code>hour_long</code>. 7-dimension composite unique key; trailing 24h watermark.</li>
+      <li><strong><code>dbt/models/cache/cache_daily_report.sql</code></strong> is the primary Metabase source — Lambda Architecture UNION ALL (D-1 <code>fact_ticket_day_wide</code> + today SUM of <code>fact_ticket_hour_wide</code>) LEFT JOIN all dims. Runs dual-target each cycle.</li>
       <li><strong><code>04_generate_tickets.py</code></strong> writes 10M rows directly to Iceberg via pyiceberg and MinIO, bypassing Trino INSERT. This achieves approximately 200,000–1,000,000 rows per second on typical laptop hardware.</li>
-      <li><strong><code>populate_mysql_cache.py</code></strong> runs aggregation SQL on Trino and bulk-inserts into MySQL using <code>executemany</code> with 5,000-row batches. The streaming DAG calls it with <code>--streaming</code> which aggregates only today's rows directly from the silver layer (≤500 rows, ~3s) — no gold MERGE, no full-table scan. The daily DAG calls it without flags for a full historical rebuild.</li>
+      <li><strong><code>populate_mysql_cache.py</code></strong> runs aggregation SQL on Trino and bulk-inserts into MySQL using <code>executemany</code> with 5,000-row batches. The streaming DAG calls it with <code>--streaming</code> which reads from <code>iceberg.gold.fact_ticket_hour_wide</code> for today's date (≤500 rows, ~3s) and writes to <code>cache_ticket_hourly</code>. The daily DAG calls it without flags for a full historical rebuild.</li>
       <li><strong><code>configmap-trino.yaml</code></strong> is the only YAML that requires envsubst. <code>deploy.sh</code> substitutes <code>${VAR}</code> placeholders from <code>.env</code> using an inline Python script before applying.</li>
     </ul>
   </section>

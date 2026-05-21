@@ -157,6 +157,91 @@ models:
 
   # ── Fact tables ───────────────────────────────────────────────────────────
 
+  - name: fact_ticket_hour_long
+    description: >
+      Gold canonical fact: EAV narrow format, append-only.
+      One row per (prblm_date, prblm_hour, dimension_combo, field_code).
+      Each 15-min run appends only NEW silver rows (prblm_sysdate watermark).
+      Source for fact_ticket_hour_wide PIVOT. Never full-scanned.
+    config:
+      materialized: incremental
+      incremental_strategy: append
+      schema: gold
+    columns:
+      - name: prblm_date
+        description: Ticket creation date (Asia/Taipei).
+        tests: [not_null]
+      - name: prblm_hour
+        description: Hour bucket (0–23).
+        tests:
+          - not_null
+          - accepted_values:
+              values: [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23]
+              quote: false
+      - name: catsub_id
+        description: Product line sub-site code.
+        tests: [not_null]
+      - name: prblm_source_id
+        description: Contact channel code.
+        tests: [not_null]
+      - name: prblm_class_id
+        description: Customer-facing category code.
+        tests: [not_null]
+      - name: prblm_perform_id
+        description: SLA tier code (NULL coalesced to 99).
+        tests: [not_null]
+      - name: prblm_status_id
+        description: Ticket lifecycle status code.
+        tests: [not_null]
+      - name: field_code
+        description: Metric name (e.g. total_tickets, resolved_tickets).
+        tests: [not_null]
+      - name: field_sk
+        description: stable_hash64_number of 'ticket|field_code'.
+        tests: [not_null]
+      - name: value_decimal
+        description: Count/decimal metric value. NULL for double fields.
+      - name: value_double
+        description: Double metric value (durations). NULL for count fields.
+      - name: updated_at
+        description: Batch timestamp — used as watermark by fact_ticket_hour_wide.
+        tests: [not_null]
+
+  - name: fact_ticket_month_wide
+    description: >
+      Gold serving fact: monthly aggregate from fact_ticket_day_wide.
+      2-month rolling lookback. sum/cnt components preserved for correct
+      weighted-avg re-aggregation. Pre-computed avg/pct for BI convenience.
+    config:
+      materialized: incremental
+      incremental_strategy: merge
+      schema: gold
+    columns:
+      - name: month_sk
+        description: YYYYMM integer (e.g. 202605). Primary key component.
+        tests: [not_null]
+      - name: catsub_id
+        description: Product line sub-site code.
+        tests: [not_null]
+      - name: prblm_source_id
+        description: Contact channel code.
+        tests: [not_null]
+      - name: prblm_class_id
+        description: Customer-facing category code.
+        tests: [not_null]
+      - name: prblm_perform_id
+        description: SLA tier code.
+        tests: [not_null]
+      - name: prblm_status_id
+        description: Ticket lifecycle status code.
+        tests: [not_null]
+      - name: total_tickets
+        description: Monthly ticket count.
+        tests: [not_null]
+      - name: updated_at
+        description: Pipeline metadata timestamp.
+        tests: [not_null]
+
   - name: fact_ticket_day_wide
     description: >
       Gold fact: daily ticket aggregations by five dimension keys.

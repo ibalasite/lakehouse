@@ -6,19 +6,17 @@ Schedule  : every 15 minutes  (*/15 * * * *)
 Purpose   : Micro-batch pipeline triggered every 15 minutes:
               1. Drain the data-source pod → append to raw Iceberg table
               2. dbt incremental bronze + silver
-              3. Populate hourly MySQL cache (aggregates today's silver rows directly)
-              4. Verify dashboard card returns data
+              3. dbt Gold hour_long (append-only EAV, no full scan)
+              4. dbt Gold hour_wide (PIVOT MERGE from hour_long)
+              5. dbt cache_daily_report (UNION ALL MV → MySQL)
+              6. Populate hourly MySQL cache (from gold.fact_ticket_hour_wide)
+              7. Verify dashboard card returns data
 
-Architecture note: this pipeline skips the gold layer rebuild.  Metabase reads
-from the MySQL cache, not Trino directly.  The daily DAG rebuilds the gold
-layer once a day.  The streaming pipeline uses --streaming mode which
-aggregates today's silver rows (< 500 rows) directly — no full-table scan.
+EDD §13.2 streaming path:
+  ingest → bronze → silver → hour_long → hour_wide → cache_daily_report → verify
 
 Constraint: Data source generates 5–20 rows per 5-min tick, so each 15-min
             cycle ingests at most ~60 rows.  No performance impact.
-
-Failure handling: same on_failure_callback as pipeline_daily.py — appends
-JSON record to /tmp/pipeline_failures.log.
 """
 
 from __future__ import annotations
@@ -39,6 +37,7 @@ log = logging.getLogger(__name__)
 DBT_DIR          = "/opt/airflow/dbt"
 DBT_PROFILES_DIR = "/opt/airflow/dbt"
 DBT_TARGET       = "prod"
+DBT_TARGET_MYSQL = "mysql_cache"
 FAILURE_LOG      = "/tmp/pipeline_failures.log"
 FETCH_SCRIPT     = "/opt/airflow/scripts/fetch_and_ingest.py"
 
@@ -50,7 +49,12 @@ TRINO_SERVER = _shlex.quote(f"{_TRINO_HOST_RAW}:{_TRINO_PORT_RAW}")
 _ALLOWED_SELECTORS: frozenset[str] = frozenset([
     "stg_bronze_tickets",
     "stg_silver_tickets",
+    "fact_ticket_hour_long",
+    "fact_ticket_hour_wide",
+    "cache_daily_report",
 ])
+
+_ALLOWED_CACHE_SELECTORS: frozenset[str] = frozenset(["cache_daily_report"])
 
 
 def _dbt_run(select: str) -> str:
@@ -67,6 +71,24 @@ def _dbt_run(select: str) -> str:
         f"dbt run --select {safe_select} "
         f"--profiles-dir {shlex.quote(DBT_PROFILES_DIR)} "
         f"--target {shlex.quote(DBT_TARGET)}"
+    )
+
+
+def _dbt_run_mysql(select: str) -> str:
+    """dbt run against mysql_cache target (Trino MySQL connector → mysql.lakehouse_cache)."""
+    if select not in _ALLOWED_CACHE_SELECTORS:
+        raise ValueError(
+            f"dbt selector {select!r} not in allowed cache list. "
+            "Register it in _ALLOWED_CACHE_SELECTORS first."
+        )
+    import shlex
+    safe_select = shlex.quote(select)
+    return (
+        f"cd {shlex.quote(DBT_DIR)} && "
+        f"PATH=/pip-packages/bin:$PATH "
+        f"dbt run --select {safe_select} "
+        f"--profiles-dir {shlex.quote(DBT_PROFILES_DIR)} "
+        f"--target {shlex.quote(DBT_TARGET_MYSQL)}"
     )
 
 
@@ -92,8 +114,7 @@ def on_failure_callback(context: dict) -> None:
 
 
 # ── Hourly cache refresh ───────────────────────────────────────────────────────
-# Runs populate_mysql_cache.py --hourly-only via BashOperator to push
-# today's hourly aggregates from Trino → cache_ticket_hourly.
+# Reads today's pre-aggregated rows from gold.fact_ticket_hour_wide (EDD §8.6).
 _POPULATE_HOURLY_CMD = r"""
 set -e
 python3 /opt/airflow/scripts/populate_mysql_cache.py --streaming
@@ -122,7 +143,6 @@ if not r.ok:
     sys.exit(1)
 session.headers["X-Metabase-Session"] = r.json()["id"]
 
-# Find the hourly card by name
 r2 = session.get(f"{MB_URL}/api/card", timeout=15)
 cards = r2.json() if r2.ok else []
 if isinstance(cards, dict):
@@ -152,7 +172,7 @@ default_args = {
 
 with DAG(
     dag_id           = "lakehouse_streaming",
-    description      = "15-min micro-batch: ingest→bronze→silver→gold_hour→cache",
+    description      = "15-min micro-batch: ingest→bronze→silver→gold_hour→cache_report→verify",
     schedule_interval= "*/15 * * * *",
     start_date       = datetime(2024, 1, 1),
     catchup          = False,
@@ -162,16 +182,16 @@ with DAG(
     doc_md           = """
 ### lakehouse_streaming
 
-Runs every **15 minutes**.
+Runs every **15 minutes**. EDD §13.2 streaming path.
 
-1. **ingest_from_source** — drains the data-source pod HTTP API and appends
-   new rows to `iceberg.bronze.raw_tickets` via pyiceberg.
+1. **ingest_from_source** — drains data-source pod HTTP API → `iceberg.bronze.raw_tickets`.
 2. **bronze_silver** group — incremental dbt bronze + silver merge.
-3. **gold_hour** — incremental merge into `fact_ticket_hour_wide`.
-4. **populate_hourly_cache** — refresh `cache_ticket_hourly` in MySQL.
-5. **verify_dashboard** — spot-check that the Metabase hourly card returns data.
+3. **gold_hour** group — `fact_ticket_hour_long` (append-only EAV) → `fact_ticket_hour_wide` (PIVOT MERGE).
+4. **cache_report** — `cache_daily_report` UNION ALL MV written to MySQL (primary Metabase source).
+5. **populate_hourly_cache** — refresh `cache_ticket_hourly` in MySQL from gold.
+6. **verify_dashboard** — spot-check Metabase hourly card returns data.
 
-Generates ≤60 rows per cycle — zero performance impact.
+Generates ≤60 rows per cycle. Gold append-only, no full scan, no OOMKill.
 """,
 ) as dag:
 
@@ -179,10 +199,7 @@ Generates ≤60 rows per cycle — zero performance impact.
     ingest_from_source = BashOperator(
         task_id      = "ingest_from_source",
         bash_command = f"python3 {_shlex.quote(FETCH_SCRIPT)}",
-        doc_md       = (
-            "Drain the data-source pod HTTP API and write new rows to "
-            "iceberg.bronze.raw_tickets via pyiceberg."
-        ),
+        doc_md       = "Drain data-source pod and append new rows to iceberg.bronze.raw_tickets.",
     )
 
     # ── 2. Bronze → Silver ────────────────────────────────────────────────────
@@ -199,18 +216,53 @@ Generates ≤60 rows per cycle — zero performance impact.
         )
         dbt_bronze >> dbt_silver
 
-    # ── 3. Hourly MySQL cache ──────────────────────────────────────────────────
+    # ── 3. Gold hour: hour_long → hour_wide ───────────────────────────────────
+    with TaskGroup(group_id="gold_hour") as gold_hour_group:
+        dbt_hour_long = BashOperator(
+            task_id      = "dbt_hour_long",
+            bash_command = _dbt_run("fact_ticket_hour_long"),
+            doc_md       = (
+                "Append-only EAV narrow fact. Only processes silver rows newer than "
+                "MAX(hour_long.updated_at) - 1 min. Zero full-table scan."
+            ),
+        )
+        dbt_hour_wide = BashOperator(
+            task_id      = "dbt_hour_wide",
+            bash_command = _dbt_run("fact_ticket_hour_wide"),
+            doc_md       = "PIVOT MERGE from hour_long delta rows → hourly serving fact.",
+        )
+        dbt_hour_long >> dbt_hour_wide
+
+    # ── 4. Cache MV: UNION ALL report — dual target (EDD §13.2b) ─────────────
+    dbt_cache_report_iceberg = BashOperator(
+        task_id      = "dbt_cache_report_iceberg",
+        bash_command = _dbt_run("cache_daily_report"),
+        doc_md       = (
+            "Lambda Architecture UNION ALL (D-1 day_wide + today hour_wide, LEFT JOIN dims) "
+            "into iceberg.cache.cache_daily_report. Iceberg is source of truth."
+        ),
+    )
+
+    dbt_cache_report_mysql = BashOperator(
+        task_id      = "dbt_cache_report_mysql",
+        bash_command = _dbt_run_mysql("cache_daily_report"),
+        doc_md       = (
+            "Mirror cache_daily_report into mysql.lakehouse_cache via Trino MySQL connector. "
+            "Primary table read by Metabase dashboards."
+        ),
+    )
+
+    # ── 5. Hourly MySQL cache (raw hourly granularity) ─────────────────────────
     populate_hourly_cache = BashOperator(
         task_id      = "populate_hourly_cache",
         bash_command = _POPULATE_HOURLY_CMD,
         doc_md       = (
-            "Aggregate today's silver rows directly and write to cache_ticket_hourly. "
-            "Uses --streaming mode: queries stg_silver_tickets WHERE prblm_date = TODAY "
-            "— no gold MERGE, no full-table scan, Trino-safe."
+            "Reads today's rows from iceberg.gold.fact_ticket_hour_wide and writes "
+            "to cache_ticket_hourly in MySQL. Used by hourly breakdown cards."
         ),
     )
 
-    # ── 4. Verify dashboard ───────────────────────────────────────────────────
+    # ── 6. Verify dashboard ───────────────────────────────────────────────────
     verify_dashboard = BashOperator(
         task_id      = "verify_dashboard",
         bash_command = _VERIFY_CMD,
@@ -218,9 +270,14 @@ Generates ≤60 rows per cycle — zero performance impact.
     )
 
     # ── Task ordering ─────────────────────────────────────────────────────────
+    # cache_daily_report: Iceberg first (source of truth) → MySQL mirror.
+    # populate_hourly_cache and verify_dashboard run after MySQL write completes.
     (
         ingest_from_source
         >> bronze_silver_group
+        >> gold_hour_group
+        >> dbt_cache_report_iceberg
+        >> dbt_cache_report_mysql
         >> populate_hourly_cache
         >> verify_dashboard
     )

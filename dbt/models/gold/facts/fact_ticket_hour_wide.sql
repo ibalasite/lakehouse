@@ -4,7 +4,7 @@
     incremental_strategy= 'merge',
     unique_key          = ['prblm_date', 'prblm_hour', 'catsub_id', 'prblm_source_id',
                            'prblm_class_id', 'prblm_perform_id', 'prblm_status_id'],
-    on_schema_change    = 'append_new_columns',
+    on_schema_change    = 'sync_all_columns',
     schema              = 'gold'
   )
 }}
@@ -12,41 +12,27 @@
 /*
   fact_ticket_hour_wide
   ──────────────────────────────────────────────────────────────────────────────
-  Gold fact table: hourly ticket aggregations by key dimensions.
+  Gold serving fact: hourly PIVOT from fact_ticket_hour_long (EAV narrow).
 
-  Granularity: one row per (prblm_date, prblm_hour, catsub_id, prblm_source_id,
-               prblm_class_id, prblm_perform_id, prblm_status_id).
+  One row per (prblm_date, prblm_hour, dimension_combo).
+  Watermark reads only NEW delta rows from hour_long since last update.
+  MERGE upserts cumulative totals — no full silver scan.
 
-  Incremental strategy: MERGE on the composite key.
-  Watermark: reprocess the trailing 24 hours on every incremental run to absorb
-  late-arriving silver updates without a full rebuild.
-
-  NULL perform_id is coalesced to 99 (一般/standard tier) so every row joins
-  cleanly to dim_perform without LEFT JOIN fanout.
-
-  All percentage metrics use NULLIF on the denominator to prevent
-  division-by-zero; result is NULL (not 0) when the group has no tickets.
+  Lineage:  fact_ticket_hour_long → fact_ticket_hour_wide (PIVOT)
+                                  → fact_ticket_day_wide (aggregate)
 */
 
-WITH silver AS (
-  SELECT
-    prblm_date,
-    CAST(EXTRACT(HOUR FROM (prblm_sysdate AT TIME ZONE 'Asia/Taipei')) AS INTEGER) AS prblm_hour,
-    catsub_id,
-    prblm_source_id,
-    prblm_class_id,
-    COALESCE(prblm_perform_id, 99)  AS prblm_perform_id,
-    prblm_status_id,
-    is_resolved,
-    prblm_doneatatime,
-    is_complain,
-    is_forwarded,
-    within_sla,
-    resolution_hours,
-    response_hours
-  FROM {{ ref('stg_silver_tickets') }}
+WITH src AS (
+  SELECT *
+  FROM {{ ref('fact_ticket_hour_long') }}
   {% if is_incremental() %}
-  WHERE prblm_date >= CAST(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei' AS DATE) - INTERVAL '1' DAY
+  WHERE updated_at > (
+    SELECT COALESCE(
+      MAX(updated_at),
+      TIMESTAMP '1900-01-01 00:00:00.000000 UTC'
+    )
+    FROM {{ this }}
+  )
   {% endif %}
 )
 
@@ -60,31 +46,24 @@ SELECT
   prblm_perform_id,
   prblm_status_id,
 
-  -- ── Volume metrics ───────────────────────────────────────────────────────────
-  COUNT(*)                                                          AS total_tickets,
-  SUM(is_resolved)                                                  AS resolved_tickets,
-  SUM(CASE WHEN prblm_doneatatime THEN 1 ELSE 0 END)               AS one_shot_resolved,
-  SUM(is_complain)                                                  AS complain_tickets,
-  SUM(is_forwarded)                                                 AS forwarded_tickets,
-  SUM(within_sla)                                                   AS within_sla_tickets,
+  -- ── Volume metrics (PIVOT by field_code) ────────────────────────────────────
+  SUM(CASE WHEN field_code = 'total_tickets'    THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS total_tickets,
+  SUM(CASE WHEN field_code = 'resolved_tickets' THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS resolved_tickets,
+  SUM(CASE WHEN field_code = 'one_shot_resolved' THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS one_shot_resolved,
+  SUM(CASE WHEN field_code = 'complain_tickets'  THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS complain_tickets,
+  SUM(CASE WHEN field_code = 'forwarded_tickets' THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS forwarded_tickets,
+  SUM(CASE WHEN field_code = 'within_sla_tickets' THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS within_sla_tickets,
 
-  -- ── Duration metrics (exclude negative values: data quality guard) ───────────
-  AVG(CASE WHEN resolution_hours >= 0 THEN CAST(resolution_hours AS DOUBLE) END)
-                                                                    AS avg_resolution_hours,
-  AVG(CASE WHEN response_hours   >= 0 THEN CAST(response_hours   AS DOUBLE) END)
-                                                                    AS avg_response_hours,
-
-  -- ── Percentage metrics ───────────────────────────────────────────────────────
-  CAST(SUM(is_resolved) AS DOUBLE)
-    / NULLIF(COUNT(*), 0) * 100                                     AS pct_resolved,
-
-  CAST(SUM(within_sla) AS DOUBLE)
-    / NULLIF(COUNT(*), 0) * 100                                     AS pct_within_sla,
+  -- ── Duration components (sum + cnt for correct weighted avg at day level) ───
+  SUM(CASE WHEN field_code = 'resolution_hours_sum' THEN value_double  ELSE CAST(0 AS DOUBLE) END) AS sum_resolution_hours,
+  SUM(CASE WHEN field_code = 'resolution_hours_cnt' THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS cnt_resolution_hours,
+  SUM(CASE WHEN field_code = 'response_hours_sum'   THEN value_double  ELSE CAST(0 AS DOUBLE) END) AS sum_response_hours,
+  SUM(CASE WHEN field_code = 'response_hours_cnt'   THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS cnt_response_hours,
 
   -- ── Pipeline metadata ────────────────────────────────────────────────────────
-  current_timestamp                                                 AS updated_at
+  MAX(updated_at) AS updated_at
 
-FROM silver
+FROM src
 GROUP BY
   prblm_date,
   prblm_hour,

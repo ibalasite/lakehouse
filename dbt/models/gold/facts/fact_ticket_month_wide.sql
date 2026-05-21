@@ -2,7 +2,7 @@
   config(
     materialized        = 'incremental',
     incremental_strategy= 'merge',
-    unique_key          = ['prblm_date', 'catsub_id', 'prblm_source_id',
+    unique_key          = ['month_sk', 'catsub_id', 'prblm_source_id',
                            'prblm_class_id', 'prblm_perform_id', 'prblm_status_id'],
     on_schema_change    = 'sync_all_columns',
     schema              = 'gold'
@@ -10,31 +10,28 @@
 }}
 
 /*
-  fact_ticket_day_wide
+  fact_ticket_month_wide
   ──────────────────────────────────────────────────────────────────────────────
-  Gold serving fact: daily aggregate from fact_ticket_hour_wide.
+  Gold serving fact: monthly aggregate from fact_ticket_day_wide.
 
-  7-day business-time lookback handles late-arriving silver updates
-  (status changes, SLA recalculations) without a full rebuild.
-  sum/cnt components preserved for correct weighted-avg re-aggregation
-  at month level; pre-computed avg/pct columns exposed for BI convenience.
+  2-month rolling lookback supports mid-month backfills and late arrivals.
+  Weighted averages re-computed from sum/cnt components — never averaged
+  over already-averaged values.
 
-  Lineage:  fact_ticket_hour_wide → fact_ticket_day_wide
-                                  → fact_ticket_month_wide
-                                  → cache_daily_report (UNION ALL MV)
+  Lineage:  fact_ticket_day_wide → fact_ticket_month_wide
 */
 
 WITH src AS (
   SELECT *
-  FROM {{ ref('fact_ticket_hour_wide') }}
+  FROM {{ ref('fact_ticket_day_wide') }}
   {% if is_incremental() %}
-  WHERE prblm_date >= CURRENT_DATE - INTERVAL '{{ var("day_wide_lookback_days", 7) }}' DAY
+  WHERE prblm_date >= CURRENT_DATE - INTERVAL '{{ var("month_wide_lookback_months", 2) }}' MONTH
   {% endif %}
 )
 
 SELECT
   -- ── Dimension keys ──────────────────────────────────────────────────────────
-  prblm_date,
+  CAST(YEAR(prblm_date) * 100 + MONTH(prblm_date) AS BIGINT) AS month_sk,
   catsub_id,
   prblm_source_id,
   prblm_class_id,
@@ -49,7 +46,7 @@ SELECT
   SUM(forwarded_tickets)  AS forwarded_tickets,
   SUM(within_sla_tickets) AS within_sla_tickets,
 
-  -- ── Duration components (additive sum/cnt for correct month-level weighted avg)
+  -- ── Duration components (additive, for future re-aggregation) ───────────────
   SUM(sum_resolution_hours) AS sum_resolution_hours,
   SUM(cnt_resolution_hours) AS cnt_resolution_hours,
   SUM(sum_response_hours)   AS sum_response_hours,
@@ -73,7 +70,7 @@ SELECT
 
 FROM src
 GROUP BY
-  prblm_date,
+  CAST(YEAR(prblm_date) * 100 + MONTH(prblm_date) AS BIGINT),
   catsub_id,
   prblm_source_id,
   prblm_class_id,

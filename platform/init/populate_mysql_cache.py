@@ -135,32 +135,32 @@ VALUES
     (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
 """
 
-# Streaming mode: aggregate today's silver rows directly.
-# Bypasses the gold MERGE entirely — the daily DAG handles the gold rebuild.
-# Silver today = at most a few hundred rows → trivial Trino query, no OOM risk.
+# Streaming mode: read today's pre-aggregated rows from gold.fact_ticket_hour_wide.
+# The streaming DAG runs hour_long + hour_wide before this, so hour_wide is current.
+# Zero full-scan risk: hour_wide for today is at most a few hundred rows.
 HOURLY_STREAMING_QUERY = """
 SELECT
-    CAST(prblm_sysdate AT TIME ZONE 'Asia/Taipei' AS DATE)       AS date_sk,
-    CAST(EXTRACT(HOUR FROM (prblm_sysdate AT TIME ZONE 'Asia/Taipei')) AS INTEGER)
-                                                                  AS hour_of_day,
+    prblm_date                                                    AS date_sk,
+    prblm_hour                                                    AS hour_of_day,
     catsub_id,
     prblm_source_id,
     prblm_class_id,
-    COALESCE(prblm_perform_id, 99)                                AS prblm_perform_id,
+    prblm_perform_id,
     prblm_status_id,
-    COUNT(*)                                                      AS total_tickets,
-    SUM(is_resolved)                                              AS resolved_tickets,
-    SUM(CASE WHEN prblm_doneatatime THEN 1 ELSE 0 END)            AS one_shot_resolved,
-    SUM(is_complain)                                              AS complain_tickets,
-    SUM(is_forwarded)                                             AS forwarded_tickets,
-    SUM(within_sla)                                               AS within_sla_tickets,
-    AVG(CASE WHEN resolution_hours >= 0
-             THEN CAST(resolution_hours AS DOUBLE) END)           AS avg_resolution_hours,
-    AVG(CASE WHEN response_hours >= 0
-             THEN CAST(response_hours AS DOUBLE) END)             AS avg_response_hours
-FROM iceberg.silver.stg_silver_tickets
+    CAST(total_tickets      AS BIGINT)                            AS total_tickets,
+    CAST(resolved_tickets   AS BIGINT)                            AS resolved_tickets,
+    CAST(one_shot_resolved  AS BIGINT)                            AS one_shot_resolved,
+    CAST(complain_tickets   AS BIGINT)                            AS complain_tickets,
+    CAST(forwarded_tickets  AS BIGINT)                            AS forwarded_tickets,
+    CAST(within_sla_tickets AS BIGINT)                            AS within_sla_tickets,
+    TRY_CAST(
+        sum_resolution_hours / NULLIF(cnt_resolution_hours, 0)
+    AS DOUBLE)                                                    AS avg_resolution_hours,
+    TRY_CAST(
+        sum_response_hours   / NULLIF(cnt_response_hours,   0)
+    AS DOUBLE)                                                    AS avg_response_hours
+FROM iceberg.gold.fact_ticket_hour_wide
 WHERE prblm_date = CAST(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei' AS DATE)
-GROUP BY 1, 2, 3, 4, 5, 6, 7
 ORDER BY 1, 2
 """
 

@@ -1,21 +1,52 @@
 version: 2
 
 models:
+  - name: cache_daily_report
+    description: >
+      Dual-target Lambda Architecture UNION ALL serving MV (EDD §13.2b).
+      Batch layer (D-1 and before): from fact_ticket_day_wide.
+      Speed layer (today): SUM of fact_ticket_hour_wide.
+      Both branches LEFT JOIN all dim tables for zero-JOIN BI queries.
+      source_tier column: 'batch' or 'intraday_hourly_sum'.
+      Full replace on each run (streaming: every 15 min; daily: 02:00).
+      Runs twice per cycle:
+        --target prod        → iceberg.cache.cache_daily_report
+        --target mysql_cache → mysql.lakehouse_cache.cache_daily_report
+      Primary table read by Metabase dashboards.
+    config:
+      materialized: table
+      schema: cache
+    columns:
+      - name: date_sk
+        description: Ticket creation date.
+        tests: [not_null]
+      - name: source_tier
+        description: "'batch' = D-1 fixed; 'intraday_hourly_sum' = today SUM(hour_wide)."
+        tests:
+          - not_null
+          - accepted_values:
+              values: [batch, intraday_hourly_sum]
+      - name: total_tickets
+        description: Ticket count for this date/dimension grain.
+        tests: [not_null]
+      - name: updated_at
+        description: Row freshness timestamp.
+        tests: [not_null]
+
   - name: cache_ticket_daily
     description: >
-      Cache layer: daily ticket metrics written to MySQL (lakehouse_cache DB)
-      via Trino's MySQL catalog connector. Covers the trailing 730 days (2 years).
-      Run with: dbt run --select cache_ticket_daily --target mysql_cache
+      Dual-target Cache MV (EDD §13.2b): daily ticket metrics pre-joined with
+      all dim tables. Covers the trailing 730 days (2 years). Runs twice per
+      daily DAG cycle:
+        dbt run --select cache_ticket_daily --target prod        → iceberg.cache
+        dbt run --select cache_ticket_daily --target mysql_cache → mysql.lakehouse_cache
 
-      This model intentionally uses TABLE materialization (full replace on each
-      run) rather than incremental, because MySQL lacks native MERGE support
-      through Trino and the 730-day window is small enough for a full refresh.
+      TABLE materialization (full replace) — MySQL lacks native MERGE via
+      Trino connector; 730-day window is small enough for a full refresh.
 
-      MySQL connection details (configured in Trino's MySQL catalog):
-        host: localhost
-        port: 3306
-        database: lakehouse_cache
-        user: lakehouse
+      Schema routing: generate_schema_name macro returns 'cache' for prod target
+      (→ iceberg.cache.*) and falls through to target.schema for mysql_cache
+      target (→ mysql.lakehouse_cache.*).
     config:
       materialized: table
       schema: cache

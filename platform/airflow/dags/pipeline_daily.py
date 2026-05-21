@@ -30,6 +30,7 @@ log = logging.getLogger(__name__)
 DBT_DIR = "/opt/airflow/dbt"
 DBT_PROFILES_DIR = "/opt/airflow/dbt"
 DBT_TARGET = "prod"
+DBT_TARGET_MYSQL = "mysql_cache"
 FAILURE_LOG = "/tmp/pipeline_failures.log"
 
 # Trino endpoint — override via TRINO_HOST / TRINO_PORT env vars so this DAG
@@ -49,27 +50,28 @@ _ALLOWED_SELECTORS: frozenset[str] = frozenset(
         "stg_bronze_tickets",
         "stg_silver_tickets",
         "gold.dims.*",
-        "fact_ticket_day_wide",
+        "fact_ticket_hour_long",
         "fact_ticket_hour_wide",
+        "fact_ticket_day_wide",
+        "fact_ticket_month_wide",
         "cache_ticket_daily",
+        "cache_daily_report",
     ]
+)
+
+# Cache selectors are allowed for both targets (same model, two targets).
+_ALLOWED_CACHE_SELECTORS: frozenset[str] = frozenset(
+    ["cache_ticket_daily", "cache_daily_report"]
 )
 
 
 def _dbt_run(select: str) -> str:
-    """Return a safe dbt run bash command for *select*.
-
-    Only selectors pre-registered in _ALLOWED_SELECTORS are permitted.
-    This prevents shell injection if the selector value were ever sourced
-    from user-controlled data (e.g. DAG params or XCom).
-    """
+    """Return a safe dbt run bash command for *select* against the prod Iceberg target."""
     if select not in _ALLOWED_SELECTORS:
         raise ValueError(
             f"dbt selector {select!r} is not in the allowed list. "
             f"Register it in _ALLOWED_SELECTORS first."
         )
-    # shlex.quote is used as a defence-in-depth second layer even though the
-    # allowlist above is the primary control.
     import shlex
     safe_select = shlex.quote(select)
     return (
@@ -78,6 +80,28 @@ def _dbt_run(select: str) -> str:
         f"dbt run --select {safe_select} "
         f"--profiles-dir {shlex.quote(DBT_PROFILES_DIR)} "
         f"--target {shlex.quote(DBT_TARGET)}"
+    )
+
+
+def _dbt_run_mysql(select: str) -> str:
+    """Return a safe dbt run bash command for *select* against the MySQL cache target.
+
+    EDD §13.2b: same model runs twice — once against prod (Iceberg) then once
+    against mysql_cache (Trino MySQL connector → mysql.lakehouse_cache).
+    """
+    if select not in _ALLOWED_CACHE_SELECTORS:
+        raise ValueError(
+            f"dbt selector {select!r} is not in the allowed cache list. "
+            f"Register it in _ALLOWED_CACHE_SELECTORS first."
+        )
+    import shlex
+    safe_select = shlex.quote(select)
+    return (
+        f"cd {shlex.quote(DBT_DIR)} && "
+        f"PATH=/pip-packages/bin:$PATH "
+        f"dbt run --select {safe_select} "
+        f"--profiles-dir {shlex.quote(DBT_PROFILES_DIR)} "
+        f"--target {shlex.quote(DBT_TARGET_MYSQL)}"
     )
 
 
@@ -220,7 +244,7 @@ Failures are logged to `/tmp/pipeline_failures.log`.
 
         dbt_bronze >> dbt_silver
 
-    # ── 3. Gold task group ────────────────────────────────────────────────────
+    # ── 3. Gold task group (EDD §13.2 order) ─────────────────────────────────
     with TaskGroup(group_id="gold") as gold_group:
 
         dbt_gold_dims = BashOperator(
@@ -229,31 +253,71 @@ Failures are logged to `/tmp/pipeline_failures.log`.
             doc_md="Rebuild all gold dimension tables (full table materialisation).",
         )
 
-        dbt_gold_facts = BashOperator(
-            task_id="dbt_gold_facts",
-            bash_command=_dbt_run("fact_ticket_day_wide"),
-            doc_md="Incremental merge into the daily-granularity wide fact table.",
-        )
-
-        dbt_gold_hour_facts = BashOperator(
-            task_id="dbt_gold_hour_facts",
-            bash_command=_dbt_run("fact_ticket_hour_wide"),
+        dbt_gold_hour_long = BashOperator(
+            task_id="dbt_gold_hour_long",
+            bash_command=_dbt_run("fact_ticket_hour_long"),
             doc_md=(
-                "Incremental merge into the hourly-granularity wide fact table. "
-                "Runs after dbt_gold_facts to avoid concurrent 10M-row scans "
-                "that exhaust the Trino JVM heap."
+                "Canonical EAV narrow fact, append-only. "
+                "Reads only silver rows newer than MAX(hour_long.updated_at) - 1 min."
             ),
         )
 
-        dbt_gold_dims >> dbt_gold_facts >> dbt_gold_hour_facts
+        dbt_gold_hour_wide = BashOperator(
+            task_id="dbt_gold_hour_wide",
+            bash_command=_dbt_run("fact_ticket_hour_wide"),
+            doc_md="PIVOT MERGE from hour_long delta rows → hourly serving fact.",
+        )
 
-    # ── 4. MySQL cache ────────────────────────────────────────────────────────
-    dbt_cache = BashOperator(
-        task_id="dbt_cache",
+        dbt_gold_day_wide = BashOperator(
+            task_id="dbt_gold_day_wide",
+            bash_command=_dbt_run("fact_ticket_day_wide"),
+            doc_md="Daily aggregate MERGE from hour_wide, 7-day lookback.",
+        )
+
+        dbt_gold_month_wide = BashOperator(
+            task_id="dbt_gold_month_wide",
+            bash_command=_dbt_run("fact_ticket_month_wide"),
+            doc_md="Monthly aggregate MERGE from day_wide, 2-month lookback.",
+        )
+
+        dbt_gold_dims >> dbt_gold_hour_long >> dbt_gold_hour_wide >> dbt_gold_day_wide >> dbt_gold_month_wide
+
+    # ── 4. Cache MV — dual target (EDD §13.2b) ───────────────────────────────
+    # Each model runs twice: first against prod (Iceberg → iceberg.cache),
+    # then against mysql_cache (Trino MySQL connector → mysql.lakehouse_cache).
+    # Iceberg runs first so it is source of truth; MySQL failure does not
+    # block the dbt test gate.
+
+    dbt_cache_iceberg = BashOperator(
+        task_id="dbt_cache_iceberg",
         bash_command=_dbt_run("cache_ticket_daily"),
+        doc_md="Write 730-day daily cache (pre-joined dims) into iceberg.cache.cache_ticket_daily.",
+    )
+
+    dbt_cache_mysql = BashOperator(
+        task_id="dbt_cache_mysql",
+        bash_command=_dbt_run_mysql("cache_ticket_daily"),
         doc_md=(
-            "Write daily aggregate metrics into MySQL cache_ticket_daily "
-            "for low-latency BI consumption by Metabase."
+            "Mirror cache_ticket_daily into mysql.lakehouse_cache via Trino MySQL connector. "
+            "Runs after Iceberg write; MySQL failure does not block Iceberg source of truth."
+        ),
+    )
+
+    dbt_cache_report_iceberg = BashOperator(
+        task_id="dbt_cache_report_iceberg",
+        bash_command=_dbt_run("cache_daily_report"),
+        doc_md=(
+            "Lambda Architecture UNION ALL (D-1 day_wide + today hour_wide, LEFT JOIN dims) "
+            "into iceberg.cache.cache_daily_report."
+        ),
+    )
+
+    dbt_cache_report_mysql = BashOperator(
+        task_id="dbt_cache_report_mysql",
+        bash_command=_dbt_run_mysql("cache_daily_report"),
+        doc_md=(
+            "Mirror cache_daily_report into mysql.lakehouse_cache via Trino MySQL connector. "
+            "Primary table read by Metabase dashboards."
         ),
     )
 
@@ -272,4 +336,12 @@ Failures are logged to `/tmp/pipeline_failures.log`.
     )
 
     # ── Task ordering ─────────────────────────────────────────────────────────
-    check_source_data >> bronze_silver_group >> gold_group >> dbt_cache >> dbt_test >> notify
+    # Cache runs as two independent Iceberg→MySQL chains after gold completes.
+    # Iceberg is source of truth; MySQL mirrors follow. Both chains must finish
+    # before the dbt test gate.
+    check_source_data >> bronze_silver_group >> gold_group
+
+    gold_group >> dbt_cache_iceberg >> dbt_cache_mysql >> dbt_test
+    gold_group >> dbt_cache_report_iceberg >> dbt_cache_report_mysql >> dbt_test
+
+    dbt_test >> notify
