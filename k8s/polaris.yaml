@@ -51,19 +51,6 @@ spec:
             # ── Iceberg drop-with-purge (required for dbt table materializations) ─
             - name: POLARIS_FEATURE_DROP_WITH_PURGE_ENABLED
               value: "true"
-            # ── PostgreSQL persistence (EDD section 3.2: Polaris --> PG) ──────
-            - name: POLARIS_PERSISTENCE_TYPE
-              value: eclipse-link
-            - name: QUARKUS_DATASOURCE_DB_KIND
-              value: postgresql
-            - name: QUARKUS_DATASOURCE_JDBC_URL
-              value: jdbc:postgresql://postgres:5432/polaris
-            - name: QUARKUS_DATASOURCE_USERNAME
-              valueFrom:
-                secretKeyRef: {name: lakehouse-secrets, key: POSTGRES_USER}
-            - name: QUARKUS_DATASOURCE_PASSWORD
-              valueFrom:
-                secretKeyRef: {name: lakehouse-secrets, key: POSTGRES_PASSWORD}
           ports:
             - containerPort: 8181
               name: catalog
