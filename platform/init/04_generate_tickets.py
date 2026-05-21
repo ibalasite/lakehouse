@@ -55,7 +55,11 @@ _pir.RestCatalog.__init__ = _patched_init
 from pyiceberg.catalog.rest import RestCatalog
 from pyiceberg.exceptions import NoSuchTableError
 from pyiceberg.partitioning import PartitionSpec, PartitionField
+from pyiceberg.schema import Schema as IcebergSchema
 from pyiceberg.transforms import YearTransform
+from pyiceberg.types import (
+    BooleanType, IntegerType, NestedField, StringType, TimestamptzType,
+)
 
 logging.basicConfig(
     format="%(asctime)s  %(levelname)-8s  %(message)s",
@@ -117,6 +121,42 @@ SCHEMA = pa.schema([
     ("prblm_notasowndept_id",    pa.int32()),
     ("ingested_at",              pa.timestamp("us", tz="UTC")),
 ])
+
+# Native Iceberg schema with explicit field IDs so assign_fresh_partition_spec_ids
+# can resolve source_id=2 (prblm_sysdate) without ambiguity.
+_T = TimestamptzType()
+_S = StringType()
+_I = IntegerType()
+_B = BooleanType()
+ICEBERG_SCHEMA = IcebergSchema(
+    NestedField(1,  "prblm_code",               _S, required=False),
+    NestedField(2,  "prblm_sysdate",            _T, required=False),
+    NestedField(3,  "prblm_updateddate",        _T, required=False),
+    NestedField(4,  "prblm_donedate",           _T, required=False),
+    NestedField(5,  "prblm_preassignenddate",   _T, required=False),
+    NestedField(6,  "prblm_preassignbegindate", _T, required=False),
+    NestedField(7,  "prblm_status_id",          _I, required=False),
+    NestedField(8,  "prblm_source_id",          _I, required=False),
+    NestedField(9,  "prblm_class_id",           _I, required=False),
+    NestedField(10, "prblm_intclass_id",        _I, required=False),
+    NestedField(11, "prblm_perform_id",         _I, required=False),
+    NestedField(12, "prblm_complain_id",        _I, required=False),
+    NestedField(13, "prblm_processuser",        _S, required=False),
+    NestedField(14, "prblm_doneuser",           _S, required=False),
+    NestedField(15, "prblm_sysuser",            _S, required=False),
+    NestedField(16, "usr_id",                   _S, required=False),
+    NestedField(17, "prblm_name",               _S, required=False),
+    NestedField(18, "gd_id",                    _S, required=False),
+    NestedField(19, "catsub_id",                _I, required=False),
+    NestedField(20, "supplier_id",              _I, required=False),
+    NestedField(21, "prblm_doneatatime",        _B, required=False),
+    NestedField(22, "prblm_forwarddatetime",    _T, required=False),
+    NestedField(23, "prblm_forwardtype",        _I, required=False),
+    NestedField(24, "prblm_notasreason_id",     _S, required=False),
+    NestedField(25, "prblm_notasowndept_id",    _I, required=False),
+    NestedField(26, "ingested_at",              _T, required=False),
+    schema_id=0,
+)
 
 # ── Name / ID pools ────────────────────────────────────────────────────────────
 SURNAMES = ["王","李","張","劉","陳","楊","趙","黃","周","吳",
@@ -307,11 +347,11 @@ def main() -> None:
         log.info("Creating table %s.%s ...", *identifier)
         iceberg_table = catalog.create_table(
             identifier=identifier,
-            schema=SCHEMA,
+            schema=ICEBERG_SCHEMA,
             location=TABLE_LOCATION,
             partition_spec=PartitionSpec(
                 PartitionField(
-                    source_id=SCHEMA.get_field_index("prblm_sysdate") + 1,
+                    source_id=2,  # field_id=2 is prblm_sysdate per ICEBERG_SCHEMA
                     field_id=1000,
                     transform=YearTransform(),
                     name="prblm_sysdate_year",
