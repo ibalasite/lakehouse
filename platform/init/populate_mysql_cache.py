@@ -10,8 +10,10 @@ Usage
     python3 populate_mysql_cache.py          # full backfill
     python3 populate_mysql_cache.py --daily-only
     python3 populate_mysql_cache.py --hourly-only
+    python3 populate_mysql_cache.py --streaming  # today only, from gold layer (streaming DAG)
 
 Speed: uses executemany with 5k-row batches — typically < 30s for full backfill.
+--streaming runs in < 2s: reads today's pre-aggregated rows from fact_ticket_hour_wide.
 """
 
 from __future__ import annotations
@@ -133,6 +135,35 @@ VALUES
     (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
 """
 
+# Streaming mode: aggregate today's silver rows directly.
+# Bypasses the gold MERGE entirely — the daily DAG handles the gold rebuild.
+# Silver today = at most a few hundred rows → trivial Trino query, no OOM risk.
+HOURLY_STREAMING_QUERY = """
+SELECT
+    CAST(prblm_sysdate AT TIME ZONE 'Asia/Taipei' AS DATE)       AS date_sk,
+    CAST(EXTRACT(HOUR FROM (prblm_sysdate AT TIME ZONE 'Asia/Taipei')) AS INTEGER)
+                                                                  AS hour_of_day,
+    catsub_id,
+    prblm_source_id,
+    prblm_class_id,
+    COALESCE(prblm_perform_id, 99)                                AS prblm_perform_id,
+    prblm_status_id,
+    COUNT(*)                                                      AS total_tickets,
+    SUM(is_resolved)                                              AS resolved_tickets,
+    SUM(CASE WHEN prblm_doneatatime THEN 1 ELSE 0 END)            AS one_shot_resolved,
+    SUM(is_complain)                                              AS complain_tickets,
+    SUM(is_forwarded)                                             AS forwarded_tickets,
+    SUM(within_sla)                                               AS within_sla_tickets,
+    AVG(CASE WHEN resolution_hours >= 0
+             THEN CAST(resolution_hours AS DOUBLE) END)           AS avg_resolution_hours,
+    AVG(CASE WHEN response_hours >= 0
+             THEN CAST(response_hours AS DOUBLE) END)             AS avg_response_hours
+FROM iceberg.silver.stg_silver_tickets
+WHERE prblm_date = CAST(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei' AS DATE)
+GROUP BY 1, 2, 3, 4, 5, 6, 7
+ORDER BY 1, 2
+"""
+
 
 def _months() -> list[tuple[int, int]]:
     """Return list of (year, month) from 2022-01 to 2026-05."""
@@ -149,10 +180,10 @@ def _next_month(y: int, m: int) -> tuple[int, int]:
     return (y + 1, 1) if m == 12 else (y, m + 1)
 
 
-def get_trino() -> trino.dbapi.Connection:
+def get_trino(schema: str = "bronze") -> trino.dbapi.Connection:
     return trino.dbapi.connect(
         host=TRINO_HOST, port=TRINO_PORT, user="admin",
-        catalog="iceberg", schema="raw",
+        catalog="iceberg", schema=schema,
         http_scheme="http", request_timeout=120,
     )
 
@@ -193,7 +224,7 @@ def populate_daily(mysql_conn) -> int:
 
         # Fresh connection per month to avoid port-forward timeout
         conn = trino.dbapi.connect(host=TRINO_HOST, port=TRINO_PORT, user="admin",
-                                   catalog="iceberg", schema="raw",
+                                   catalog="iceberg", schema="bronze",
                                    http_scheme="http", request_timeout=120)
         cur = conn.cursor()
         cur.execute(sql)
@@ -226,7 +257,7 @@ def populate_hourly(mysql_conn) -> int:
         sql = HOURLY_QUERY_MONTH.format(year=year, month=month, next_year=ny, next_month=nm)
 
         conn = trino.dbapi.connect(host=TRINO_HOST, port=TRINO_PORT, user="admin",
-                                   catalog="iceberg", schema="raw",
+                                   catalog="iceberg", schema="bronze",
                                    http_scheme="http", request_timeout=120)
         cur = conn.cursor()
         cur.execute(sql)
@@ -248,27 +279,65 @@ def populate_hourly(mysql_conn) -> int:
     return total_inserted
 
 
+def populate_hourly_today(mysql_conn) -> int:
+    """Refresh only today's hourly rows from the pre-aggregated gold layer.
+
+    Used by the 15-min streaming DAG.  Reads from fact_ticket_hour_wide (already
+    aggregated, < 1000 rows) instead of scanning 10M raw_tickets rows.
+    """
+    log.info("Streaming mode: refreshing today's hourly cache from gold layer…")
+    mc = mysql_conn.cursor()
+    mc.execute("DELETE FROM cache_ticket_hourly WHERE date_sk = CURDATE()")
+    mysql_conn.commit()
+    deleted = mc.rowcount
+    log.info("  Deleted %d stale rows for today", deleted)
+
+    t0 = time.monotonic()
+    conn = trino.dbapi.connect(
+        host=TRINO_HOST, port=TRINO_PORT, user="admin",
+        catalog="iceberg", schema="gold",
+        http_scheme="http", request_timeout=60,
+    )
+    cur = conn.cursor()
+    cur.execute(HOURLY_STREAMING_QUERY)
+    rows_raw = cur.fetchall()
+    conn.close()
+
+    if rows_raw:
+        mc.executemany(HOURLY_INSERT, rows_raw)
+        mysql_conn.commit()
+
+    log.info("  Inserted %d rows for today in %.1fs", len(rows_raw), time.monotonic() - t0)
+    return len(rows_raw)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Populate MySQL cache from Trino Iceberg")
     parser.add_argument("--daily-only",  action="store_true")
     parser.add_argument("--hourly-only", action="store_true")
+    parser.add_argument("--streaming",   action="store_true",
+                        help="Streaming mode: only refresh today's hourly data from gold layer")
     args = parser.parse_args()
-
-    do_daily  = not args.hourly_only
-    do_hourly = not args.daily_only
 
     log.info("Connecting to MySQL at %s:%d…", MYSQL_HOST, MYSQL_PORT)
     mysql_conn = get_mysql()
 
     t0 = time.monotonic()
 
-    if do_daily:
-        n = populate_daily(mysql_conn)
-        log.info("Daily cache: %s rows", f"{n:,}")
+    if args.streaming:
+        n = populate_hourly_today(mysql_conn)
+        log.info("Streaming hourly cache: %s rows", f"{n:,}")
+    else:
+        do_daily  = not args.hourly_only
+        do_hourly = not args.daily_only
 
-    if do_hourly:
-        n = populate_hourly(mysql_conn)
-        log.info("Hourly cache: %s rows", f"{n:,}")
+        if do_daily:
+            n = populate_daily(mysql_conn)
+            log.info("Daily cache: %s rows", f"{n:,}")
+
+        if do_hourly:
+            n = populate_hourly(mysql_conn)
+            log.info("Hourly cache: %s rows", f"{n:,}")
 
     log.info("Total time: %.1fs", time.monotonic() - t0)
     mysql_conn.close()

@@ -1,9 +1,8 @@
 {{
   config(
     materialized        = 'incremental',
-    incremental_strategy= 'merge',
-    unique_key          = 'prblm_code',
-    on_schema_change    = 'sync_all_columns',
+    incremental_strategy= 'append',
+    on_schema_change    = 'append_new_columns',
     schema              = 'silver'
   )
 }}

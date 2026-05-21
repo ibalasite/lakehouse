@@ -4,7 +4,7 @@
     incremental_strategy= 'merge',
     unique_key          = ['prblm_date', 'prblm_hour', 'catsub_id', 'prblm_source_id',
                            'prblm_class_id', 'prblm_perform_id', 'prblm_status_id'],
-    on_schema_change    = 'sync_all_columns',
+    on_schema_change    = 'append_new_columns',
     schema              = 'gold'
   )
 }}

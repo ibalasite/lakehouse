@@ -6,9 +6,13 @@ Schedule  : every 15 minutes  (*/15 * * * *)
 Purpose   : Micro-batch pipeline triggered every 15 minutes:
               1. Drain the data-source pod → append to raw Iceberg table
               2. dbt incremental bronze + silver
-              3. dbt incremental gold hour_wide fact
-              4. Populate hourly MySQL cache
-              5. Verify dashboard card returns data
+              3. Populate hourly MySQL cache (aggregates today's silver rows directly)
+              4. Verify dashboard card returns data
+
+Architecture note: this pipeline skips the gold layer rebuild.  Metabase reads
+from the MySQL cache, not Trino directly.  The daily DAG rebuilds the gold
+layer once a day.  The streaming pipeline uses --streaming mode which
+aggregates today's silver rows (< 500 rows) directly — no full-table scan.
 
 Constraint: Data source generates 5–20 rows per 5-min tick, so each 15-min
             cycle ingests at most ~60 rows.  No performance impact.
@@ -46,7 +50,6 @@ TRINO_SERVER = _shlex.quote(f"{_TRINO_HOST_RAW}:{_TRINO_PORT_RAW}")
 _ALLOWED_SELECTORS: frozenset[str] = frozenset([
     "stg_bronze_tickets",
     "stg_silver_tickets",
-    "fact_ticket_hour_wide",
 ])
 
 
@@ -93,7 +96,7 @@ def on_failure_callback(context: dict) -> None:
 # today's hourly aggregates from Trino → cache_ticket_hourly.
 _POPULATE_HOURLY_CMD = r"""
 set -e
-python3 /opt/airflow/scripts/populate_mysql_cache.py --hourly-only
+python3 /opt/airflow/scripts/populate_mysql_cache.py --streaming
 """
 
 # ── Verify Metabase card ───────────────────────────────────────────────────────
@@ -196,21 +199,18 @@ Generates ≤60 rows per cycle — zero performance impact.
         )
         dbt_bronze >> dbt_silver
 
-    # ── 3. Gold hour_wide ─────────────────────────────────────────────────────
-    dbt_gold_hour = BashOperator(
-        task_id      = "dbt_gold_hour",
-        bash_command = _dbt_run("fact_ticket_hour_wide"),
-        doc_md       = "Incremental merge into the hourly wide fact table.",
-    )
-
-    # ── 4. Hourly MySQL cache ──────────────────────────────────────────────────
+    # ── 3. Hourly MySQL cache ──────────────────────────────────────────────────
     populate_hourly_cache = BashOperator(
         task_id      = "populate_hourly_cache",
         bash_command = _POPULATE_HOURLY_CMD,
-        doc_md       = "Write hourly aggregates into cache_ticket_hourly for Metabase.",
+        doc_md       = (
+            "Aggregate today's silver rows directly and write to cache_ticket_hourly. "
+            "Uses --streaming mode: queries stg_silver_tickets WHERE prblm_date = TODAY "
+            "— no gold MERGE, no full-table scan, Trino-safe."
+        ),
     )
 
-    # ── 5. Verify dashboard ───────────────────────────────────────────────────
+    # ── 4. Verify dashboard ───────────────────────────────────────────────────
     verify_dashboard = BashOperator(
         task_id      = "verify_dashboard",
         bash_command = _VERIFY_CMD,
@@ -221,7 +221,6 @@ Generates ≤60 rows per cycle — zero performance impact.
     (
         ingest_from_source
         >> bronze_silver_group
-        >> dbt_gold_hour
         >> populate_hourly_cache
         >> verify_dashboard
     )
