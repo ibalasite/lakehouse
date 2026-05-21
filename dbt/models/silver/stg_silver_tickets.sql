@@ -1,7 +1,8 @@
 {{
   config(
     materialized        = 'incremental',
-    incremental_strategy= 'append',
+    incremental_strategy= 'merge',
+    unique_key          = 'prblm_code',
     on_schema_change    = 'append_new_columns',
     schema              = 'silver'
   )
@@ -70,12 +71,9 @@ WITH bronze_incremental AS (
     ingested_at,
     bronze_created_at
   FROM {{ ref('stg_bronze_tickets') }}
-  {% if is_incremental() %}
   WHERE
-    -- Guard against NULL bronze_created_at (data quality issue in upstream).
-    -- Such rows are excluded here; they will be caught by the bronze
-    -- not_null test on bronze_created_at and surfaced as a pipeline alert.
     bronze_created_at IS NOT NULL
+    {% if is_incremental() %}
     AND bronze_created_at >= (
       SELECT COALESCE(
         MAX(updated_at) - INTERVAL '10' MINUTE,
@@ -83,7 +81,11 @@ WITH bronze_incremental AS (
       )
       FROM {{ this }}
     )
-  {% endif %}
+    {% else %}
+    -- Full-refresh: limit to last 60 days by ticket business date to stay within
+    -- memory constraints. Older history is preserved via incremental runs.
+    AND prblm_sysdate >= CURRENT_TIMESTAMP - INTERVAL '60' DAY
+    {% endif %}
 ),
 
 -- Deduplicate: keep the most recently updated version of each ticket

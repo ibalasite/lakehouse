@@ -8,8 +8,8 @@ data:
     coordinator=true
     node-scheduler.include-coordinator=true
     http-server.http.port=8080
-    query.max-memory=1500MB
-    query.max-memory-per-node=1200MB
+    query.max-memory=1700MB
+    query.max-memory-per-node=1700MB
     query.max-execution-time=30m
     query.max-run-time=60m
     spill-enabled=true
@@ -22,7 +22,7 @@ data:
 
   jvm.config: |
     -server
-    -Xmx2000m
+    -Xmx2500m
     -XX:MaxDirectMemorySize=256m
     -XX:MaxMetaspaceSize=512m
     -Duser.timezone=Asia/Taipei
