@@ -396,6 +396,7 @@
     <ol>
       <li><a href="#overview">1. Project Overview</a></li>
       <li><a href="#architecture">2. Architecture</a></li>
+      <li><a href="#goals">2b. Project Goals</a></li>
       <li><a href="#prerequisites">3. Prerequisites</a></li>
       <li><a href="#installation">4. Installation</a></li>
       <li><a href="#deploy-modes">5. Deploy Modes</a></li>
@@ -522,14 +523,39 @@ Iceberg raw.raw_tickets  [Bronze]
     │  dbt stg_bronze_tickets
     ▼
 Iceberg silver.stg_silver_tickets  [Silver]
-    │  dbt fact_ticket_day_wide  +  fact_ticket_hour_wide
+    │  dbt fact_ticket_day_wide  +  fact_ticket_hour_wide  (daily DAG only)
     ▼
 Iceberg gold.*  [Gold]
-    │  populate_mysql_cache.py --hourly-only
+    │  populate_mysql_cache.py --streaming (today from silver, streaming DAG)
+    │  populate_mysql_cache.py --hourly-only (full rebuild, daily DAG)
     ▼
 MySQL cache_ticket_daily / cache_ticket_hourly
     ├──> Metabase 客服問題單日報 (5 charts, daily)
     └──> Metabase 即時監控      (3 cards, auto-refresh 15 min)</code></pre>
+  </section>
+
+  <!-- ─── 2b. Project Goals ───────────────────────────────────────────── -->
+  <section id="goals">
+    <h2 class="section-title">2b. Project Goals <span class="zh">專案目標</span></h2>
+
+    <h3>Goal 1 — Live 15-Minute Streaming Pipeline <span class="zh">15 分鐘串流 Pipeline 全通</span></h3>
+    <p>The end-to-end pipeline must run and be observable in Metabase without manual intervention:</p>
+    <ol>
+      <li><strong>Data Source POD</strong> generates 5–20 synthetic ticket rows every <strong>5 minutes</strong></li>
+      <li><strong><code>lakehouse_streaming</code> DAG</strong> runs every <strong>15 minutes</strong> and completes all tasks:<br>
+        <code>ingest_from_source → dbt_bronze → dbt_silver → populate_hourly_cache → verify_dashboard</code>
+      </li>
+      <li><strong>Metabase 即時監控</strong> auto-refreshes every 15 minutes and shows continuously increasing ticket counts for today</li>
+    </ol>
+    <p><strong>Acceptance:</strong> open Metabase, watch <code>cache_ticket_hourly</code> row counts grow every 15 min.</p>
+
+    <p>本專案的端對端 pipeline 必須在無人工干預的情況下可在 Metabase 觀測：Data Source POD 每 5 分鐘產生資料，<code>lakehouse_streaming</code> DAG 每 15 分鐘攝入並推進至 MySQL cache，Metabase 即時監控每 15 分鐘自動刷新顯示持續增加的今日問題單數量。</p>
+
+    <h3>Goal 2 — Credential Output Script <span class="zh">憑證輸出腳本</span></h3>
+    <p>After <code>deploy.sh</code> completes, <strong>all service URLs and credentials must be printed to the console</strong> in a structured format separated by access method (WEB UIs / Pod CLI / ClusterIP services).</p>
+    <p>The script <code>k8s/show_services.sh</code> must also be <strong>callable standalone at any time</strong> — not just at deploy end — to query current credentials from <code>.env</code>.</p>
+    <pre><code>bash k8s/show_services.sh   # query current service URLs + credentials at any time</code></pre>
+    <p><code>deploy.sh</code> 完畢後必須列印所有服務 URL 與憑證（分 WEB UI / Pod CLI / ClusterIP 存取方式）。<code>k8s/show_services.sh</code> 可隨時獨立呼叫以查詢當前帳號密碼，便於本地開發。</p>
   </section>
 
   <!-- ─── 3. Prerequisites ────────────────────────────────────────────── -->

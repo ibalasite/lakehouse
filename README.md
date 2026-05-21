@@ -99,6 +99,57 @@ This repository is a **self-contained local data lakehouse** that demonstrates a
 
 ---
 
+## Project Goals / 專案目標
+
+This project must satisfy two operational acceptance criteria:
+
+### Goal 1 — Live 15-Minute Streaming Pipeline / 15 分鐘串流 Pipeline 全通
+
+The end-to-end pipeline must run and be observable in Metabase without manual intervention:
+
+1. **Data Source POD** generates 5–20 synthetic ticket rows every **5 minutes**
+2. **`lakehouse_streaming` DAG** runs every **15 minutes** and completes all tasks:
+   - `ingest_from_source` → appends new rows to `iceberg.bronze.raw_tickets`
+   - `bronze_silver.dbt_bronze` → incremental append into `stg_bronze_tickets`
+   - `bronze_silver.dbt_silver` → incremental append into `stg_silver_tickets`
+   - `populate_hourly_cache` → aggregates today's silver rows → writes to `cache_ticket_hourly`
+   - `verify_dashboard` → confirms Metabase hourly card returns rows
+3. **Metabase** **即時監控** dashboard auto-refreshes every 15 minutes and shows continuously increasing ticket counts for today
+
+Acceptance: open Metabase, watch `cache_ticket_hourly` row counts grow every 15 min.
+
+---
+
+本專案的端對端 pipeline 必須在無人工干預的情況下可在 Metabase 觀測：
+
+1. **Data Source POD** 每 **5 分鐘**產生 5–20 筆合成問題單
+2. **`lakehouse_streaming` DAG** 每 **15 分鐘**執行並完成所有任務（ingest → bronze → silver → MySQL cache → verify）
+3. **Metabase 即時監控**每 15 分鐘自動刷新，今日問題單數量持續增加
+
+驗收標準：開啟 Metabase，觀察到 `cache_ticket_hourly` 每 15 分鐘新增一批資料。
+
+### Goal 2 — Credential Output Script / 憑證輸出腳本
+
+After `deploy.sh` completes, **all service URLs and credentials must be printed to the console** in a structured format, separated by access method:
+
+- **WEB UIs** (browser login): Metabase, Airflow, MinIO Console
+- **Internal APIs** (no browser login): Trino UI, MinIO S3 API
+- **Pod/CLI access** (kubectl exec): Trino shell, MySQL, Airflow scheduler shell
+- **ClusterIP services** (port-forward): Polaris API, Data Source health
+
+The script `k8s/show_services.sh` must also be **callable standalone at any time** (not just at deploy end) to query current credentials from `.env`.
+
+---
+
+`deploy.sh` 執行完畢後，必須在 console **列印所有服務的 URL 與憑證**，依存取方式分類：
+- **WEB UI**（瀏覽器登入）：Metabase、Airflow、MinIO Console
+- **Pod/CLI 存取**（kubectl exec）：Trino shell、MySQL、Airflow scheduler
+- **ClusterIP 服務**（port-forward）：Polaris API
+
+`k8s/show_services.sh` 必須**可隨時獨立呼叫**以查詢當前帳號密碼，便於本地開發。
+
+---
+
 ## Architecture / 架構
 
 ```
