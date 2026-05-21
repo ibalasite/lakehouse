@@ -169,10 +169,12 @@ init_env.sh  →  .env (random credentials)
                └── Data Source POD  (ClusterIP :8080 — internal only)
 
                Jobs (run in order):
-               01-minio-init       → creates lakehouse bucket
-               02-polaris-bootstrap → registers catalog + principal
-               04-generate-tickets → 04_generate_tickets.py → Iceberg raw.raw_tickets (~10M rows seed)
-               05-metabase-setup   → 05_metabase_setup.py → 2 dashboards (日報 + 即時監控)
+               01-minio-init         → creates lakehouse bucket
+               02-polaris-bootstrap  → registers catalog + principal
+               04-generate-tickets   → 04_generate_tickets.py → Iceberg bronze.raw_tickets (~10M rows seed)
+               05-metabase-setup     → 05_metabase_setup.py → 2 dashboards (日報 + 即時監控)
+               06-bulk-bronze        → bulk_load_parquet.py --layer bronze → ETL seed to bronze
+               07-bulk-silver        → bulk_load_parquet.py --layer silver → ETL bronze to silver
 ```
 
 **Streaming data flow (every 15 min) / 串流資料流（每 15 分）：**
@@ -183,19 +185,29 @@ Data Source POD
     │
     │  GET /api/tickets/drain  (fetch_and_ingest.py via Airflow)
     ▼
-Iceberg raw.raw_tickets  [Bronze]
-    │  dbt stg_bronze_tickets
+Iceberg bronze.raw_tickets  [Bronze]
+    │  dbt stg_bronze_tickets  (incremental append)
     ▼
 Iceberg silver.stg_silver_tickets  [Silver]
-    │  dbt fact_ticket_day_wide  +  fact_ticket_hour_wide
+    │  populate_mysql_cache.py --streaming
+    │  (aggregates today's rows directly from silver; ≤500 rows, ~3s)
+    ▼
+MySQL lakehouse_cache.cache_ticket_hourly
+    │
+    └──> Metabase  即時監控  (3 cards, auto-refresh 15 min)
+
+Daily data flow (02:00 daily) / 每日資料流（每天 02:00）：
+
+Iceberg silver.stg_silver_tickets  [Silver]
+    │  dbt fact_ticket_day_wide  +  fact_ticket_hour_wide  (MERGE)
     ▼
 Iceberg gold.*  [Gold]
-    │  populate_mysql_cache.py (--hourly-only)
+    │  populate_mysql_cache.py (full rebuild)
     ▼
 MySQL lakehouse_cache.cache_ticket_daily / cache_ticket_hourly
     │
     └──> Metabase  客服問題單日報  (5 charts, daily)
-    └──> Metabase  即時監控       (3 cards, auto-refresh 15 min)
+    └──> Metabase  即時監控       (3 cards)
 ```
 
 ---
@@ -486,7 +498,7 @@ python3 platform/init/e2e_smoke_test.py
 The test performs these steps in order / 測試依序執行：
 
 1. **Connectivity check**: verifies all 6 services are reachable (Trino, Airflow, Metabase, MinIO via NodePort; Polaris and MySQL via port-forward, auto-started if needed)
-2. **Data generation**: writes 500 synthetic ticket rows for today into `iceberg.raw.raw_tickets` via pyiceberg
+2. **Data generation**: writes 500 synthetic ticket rows for today into `iceberg.bronze.raw_tickets` via pyiceberg
 3. **Airflow trigger**: calls the Airflow REST API to trigger the `lakehouse_hourly` DAG
 4. **DAG poll**: polls until the DAG run reaches `success` or `failed` (default 600s timeout)
 5. **MySQL verify**: confirms `cache_ticket_hourly` contains rows for today's date
@@ -525,7 +537,7 @@ Four DAGs are deployed automatically. All DAGs read credentials from Kubernetes 
 
 | DAG | File | Schedule | Purpose |
 |---|---|---|---|
-| `lakehouse_streaming` | `pipeline_streaming.py` | `*/15 * * * *` | **Primary streaming DAG**: drain data-source pod → Bronze → Silver → dbt Gold hourly → MySQL hourly cache → Metabase refresh |
+| `lakehouse_streaming` | `pipeline_streaming.py` | `*/15 * * * *` | **Primary streaming DAG**: drain data-source pod → Bronze (append) → Silver (append) → MySQL hourly cache (aggregate from silver, `--streaming`) → Metabase refresh |
 | `lakehouse_daily` | `pipeline_daily.py` | `0 2 * * *` (02:00 UTC) | Full daily cache refresh: dbt Gold daily fact → MySQL daily + hourly tables |
 | `lakehouse_backfill` | `pipeline_backfill.py` | Manual trigger only | Accepts `start_date` / `end_date` conf for historical backfill |
 | `lakehouse_hourly` | `pipeline_hourly.py` | Manual trigger / smoke test | Refreshes today's hourly rows; used by `e2e_smoke_test.py` |
@@ -800,7 +812,7 @@ lakehouse/
 └── contracts/
     └── metrics/
         ├── field_registry.yml           # EDD metric contract: 12 ticket KPI fields
-        └── namespace_registry.yml       # EDD namespace registry → iceberg.raw.raw_tickets
+        └── namespace_registry.yml       # EDD namespace registry → iceberg.bronze.raw_tickets
 ```
 
 **Key file notes / 關鍵檔案說明：**
@@ -809,14 +821,14 @@ lakehouse/
 - `platform/init/fetch_and_ingest.py` polls `/api/tickets/drain`, converts ISO timestamps to microsecond epoch for PyArrow, and appends to `iceberg.bronze.raw_tickets` via pyiceberg direct write. Called by the `lakehouse_streaming` DAG every 15 minutes.
 - `dbt/models/gold/facts/fact_ticket_hour_wide.sql` is an incremental MERGE model with a 7-dimension composite unique key; watermark covers the trailing 24 hours to absorb late silver updates.
 - `04_generate_tickets.py` writes 10M rows directly to Iceberg via pyiceberg and MinIO, bypassing Trino INSERT. This achieves approximately 200,000–1,000,000 rows per second on typical laptop hardware.
-- `populate_mysql_cache.py` runs aggregation SQL on Trino and bulk-inserts into MySQL using `executemany` with 5,000-row batches. Supports `--hourly-only` flag for the streaming DAG to skip daily table updates.
+- `populate_mysql_cache.py` runs aggregation SQL on Trino and bulk-inserts into MySQL using `executemany` with 5,000-row batches. The streaming DAG calls it with `--streaming` which aggregates only today's rows directly from the silver layer (≤500 rows, ~3s) — no gold MERGE, no full-table scan. The daily DAG calls it without flags for a full historical rebuild.
 - `configmap-trino.yaml` is the only YAML that requires envsubst. It contains `${POLARIS_CLIENT_ID}`, `${POLARIS_CLIENT_SECRET}`, `${MINIO_ROOT_USER}`, and `${MINIO_ROOT_PASSWORD}` placeholders that `deploy.sh` substitutes from `.env` using an inline Python script before applying.
 
 - `platform/data_source/app.py` 是純 stdlib Python HTTP 伺服器，pod spec 設定 `enableServiceLinks: false`（防止 k8s 注入 `DATA_SOURCE_PORT=tcp://...` 造成 `int()` 解析崩潰）。pod 每 5 分鐘向記憶體 deque 生成 5–20 筆資料；`GET /api/tickets/drain` 原子性地返回並清除緩衝區。
 - `platform/init/fetch_and_ingest.py` 輪詢 `/api/tickets/drain`，將 ISO 時間戳轉換為 PyArrow 所需的微秒 epoch，並透過 pyiceberg 直接寫入追加至 `iceberg.bronze.raw_tickets`。由 `lakehouse_streaming` DAG 每 15 分鐘呼叫。
-- `dbt/models/gold/facts/fact_ticket_hour_wide.sql` 是增量 MERGE 模型，具備 7 維複合 unique_key；水位線涵蓋過去 24 小時以吸收遲到的 silver 更新。
+- `dbt/models/gold/facts/fact_ticket_hour_wide.sql` 是增量 MERGE 模型，具備 7 維複合 unique_key；水位線涵蓋過去 24 小時以吸收遲到的 silver 更新。僅由每日 DAG（02:00）執行，串流 DAG 不執行此模型。
 - `04_generate_tickets.py` 寫入 1,000 萬筆資料，透過 pyiceberg 和 MinIO 直接寫入 Iceberg，在典型筆電硬體上可達約 200,000–1,000,000 行/秒。
-- `populate_mysql_cache.py` 在 Trino 執行聚合 SQL，以 5,000 行批次透過 `executemany` 大量插入 MySQL。支援 `--hourly-only` 旗標供串流 DAG 跳過日報表更新。
+- `populate_mysql_cache.py` 在 Trino 執行聚合 SQL，以 5,000 行批次透過 `executemany` 大量插入 MySQL。串流 DAG 使用 `--streaming` 旗標，直接從 silver 層聚合今日資料（≤500 筆，~3 秒），不執行 gold MERGE，無全表掃描。每日 DAG 執行完整歷史重建。
 - `configmap-trino.yaml` 是唯一需要 envsubst 的 YAML，`deploy.sh` 在套用前使用內嵌 Python 腳本從 `.env` 替換佔位符。
 
 ---

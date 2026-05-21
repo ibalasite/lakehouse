@@ -519,19 +519,26 @@
     │
     │  GET /api/tickets/drain  ← fetch_and_ingest.py via Airflow lakehouse_streaming
     ▼
-Iceberg raw.raw_tickets  [Bronze]
-    │  dbt stg_bronze_tickets
+Iceberg bronze.raw_tickets  [Bronze]
+    │  dbt stg_bronze_tickets  (incremental append)
     ▼
 Iceberg silver.stg_silver_tickets  [Silver]
-    │  dbt fact_ticket_day_wide  +  fact_ticket_hour_wide  (daily DAG only)
+    │  populate_mysql_cache.py --streaming
+    │  (aggregates today's rows directly from silver; ≤500 rows, ~3s — no gold MERGE)
+    ▼
+MySQL cache_ticket_hourly
+    └──> Metabase 即時監控  (3 cards, auto-refresh 15 min)
+
+Daily data flow (02:00) / 每日資料流（02:00）
+Iceberg silver.stg_silver_tickets  [Silver]
+    │  dbt fact_ticket_day_wide  +  fact_ticket_hour_wide  (MERGE)
     ▼
 Iceberg gold.*  [Gold]
-    │  populate_mysql_cache.py --streaming (today from silver, streaming DAG)
-    │  populate_mysql_cache.py --hourly-only (full rebuild, daily DAG)
+    │  populate_mysql_cache.py (full rebuild)
     ▼
 MySQL cache_ticket_daily / cache_ticket_hourly
     ├──> Metabase 客服問題單日報 (5 charts, daily)
-    └──> Metabase 即時監控      (3 cards, auto-refresh 15 min)</code></pre>
+    └──> Metabase 即時監控      (3 cards)</code></pre>
   </section>
 
   <!-- ─── 2b. Project Goals ───────────────────────────────────────────── -->
@@ -809,7 +816,7 @@ All checks passed.
           <td><code>lakehouse_streaming</code></td>
           <td><code>pipeline_streaming.py</code></td>
           <td><code>*/15 * * * *</code></td>
-          <td><strong>Primary streaming DAG:</strong> drain data-source pod → Bronze → Silver → dbt Gold hourly → MySQL hourly cache → Metabase refresh</td>
+          <td><strong>Primary streaming DAG:</strong> drain data-source pod → Bronze (append) → Silver (append) → MySQL hourly cache (<code>--streaming</code>, aggregate from silver today) → Metabase refresh</td>
         </tr>
         <tr>
           <td><code>lakehouse_daily</code></td>
@@ -1037,7 +1044,7 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "changeme")  # WRONG — never
 │   └── init/
 │       ├── fetch_and_ingest.py          # Drain data-source pod → Iceberg via pyiceberg
 │       ├── 06_bulk_bronze.py + 07_bulk_silver.py  # Year-partitioned bulk ETL (avoids Trino OOM–1M rows/sec)
-│       ├── populate_mysql_cache.py      # Trino → MySQL aggregation (--hourly-only support)
+│       ├── populate_mysql_cache.py      # Trino → MySQL aggregation (--streaming for 15-min DAG)
 │       ├── 05_metabase_setup.py         # Metabase 2-dashboard auto-setup via REST API
 │       └── e2e_smoke_test.py            # End-to-end pipeline verification (6-step)
 ├── dbt/models/
@@ -1058,7 +1065,7 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "changeme")  # WRONG — never
       <li><strong><code>platform/init/fetch_and_ingest.py</code></strong> polls <code>/api/tickets/drain</code>, converts ISO timestamps to microsecond epoch for PyArrow, and appends to <code>iceberg.bronze.raw_tickets via pyiceberg direct write. Called every 15 minutes by <code>lakehouse_streaming</code>.</li>
       <li><strong><code>dbt/models/gold/facts/fact_ticket_hour_wide.sql</code></strong> is an incremental MERGE model with a 7-dimension composite unique key; watermark covers the trailing 24 hours to absorb late silver updates.</li>
       <li><strong><code>04_generate_tickets.py</code></strong> writes 10M rows directly to Iceberg via pyiceberg and MinIO, bypassing Trino INSERT. This achieves approximately 200,000–1,000,000 rows per second on typical laptop hardware.</li>
-      <li><strong><code>populate_mysql_cache.py</code></strong> runs aggregation SQL on Trino and bulk-inserts into MySQL using <code>executemany</code> with 5,000-row batches. Supports <code>--hourly-only</code> flag for the streaming DAG.</li>
+      <li><strong><code>populate_mysql_cache.py</code></strong> runs aggregation SQL on Trino and bulk-inserts into MySQL using <code>executemany</code> with 5,000-row batches. The streaming DAG calls it with <code>--streaming</code> which aggregates only today's rows directly from the silver layer (≤500 rows, ~3s) — no gold MERGE, no full-table scan. The daily DAG calls it without flags for a full historical rebuild.</li>
       <li><strong><code>configmap-trino.yaml</code></strong> is the only YAML that requires envsubst. <code>deploy.sh</code> substitutes <code>${VAR}</code> placeholders from <code>.env</code> using an inline Python script before applying.</li>
     </ul>
   </section>
