@@ -19,18 +19,23 @@
 **macOS / Linux / WSL2:**
 ```bash
 bash init_env.sh       # generates .env with fresh random credentials
-./k8s/deploy.sh        # deploys the full stack (~25 min on first run)
+./k8s/deploy.sh        # deploys the full stack (~90 min on first run — includes 10M-row seed + bulk load)
 ```
 
 **Windows (PowerShell):**
 ```powershell
 .\init_env.ps1         # generates .env with fresh random credentials
-.\k8s\deploy.ps1       # deploys the full stack (~25 min on first run)
+.\k8s\deploy.ps1       # deploys the full stack (~90 min on first run — includes 10M-row seed + bulk load)
 ```
 
-Then open [http://localhost:30300](http://localhost:30300) and log in with the credentials printed by the init script. The **客服問題單日報** dashboard with 5 charts will be ready.
+Then open [http://localhost:30300](http://localhost:30300) and log in with the credentials printed at the end of deploy. The **客服問題單日報** dashboard (5 charts) and **即時監控** (3 cards) will be ready. From that point, the `lakehouse_streaming` DAG runs every 15 minutes — data-source POD generates rows every 5 min, Airflow ingests them through Bronze→Silver→Gold→MySQL→Metabase automatically.
 
-開啟 [http://localhost:30300](http://localhost:30300)，使用 init 腳本列印的密碼登入。**客服問題單日報**儀表板（含 5 張圖表）即可使用。
+View all service URLs and credentials at any time:
+```bash
+bash k8s/show_services.sh
+```
+
+開啟 [http://localhost:30300](http://localhost:30300)，使用 deploy 結束時列印的密碼登入。**客服問題單日報**（5 張圖）與**即時監控**（3 張卡片）即可使用。此後 `lakehouse_streaming` DAG 每 15 分鐘執行一次 — data-source POD 每 5 分鐘產生資料，Airflow 自動將其推送 Bronze→Silver→Gold→MySQL→Metabase。
 
 ---
 
@@ -266,11 +271,13 @@ The script performs these steps in order / 腳本依序執行：
 7. Runs `01-minio-init` job: creates the `lakehouse` bucket
 8. Runs `02-polaris-bootstrap` job: registers the Iceberg catalog and `trino-svc` principal
 9. Deploys Trino
-10. Runs `04-generate-tickets` job: writes synthetic Iceberg data via `bulk_load_parquet.py`
-11. Deploys Airflow (webserver + scheduler)
-12. Deploys Metabase, then runs `05-metabase-setup` job to create 2 dashboards (日報 + 即時監控)
-13. Deploys Data Source POD (`data-source` Deployment + ClusterIP Service)
-14. Prints the service URL summary
+10. Runs `04-generate-tickets` job: writes 10M synthetic ticket rows directly to `iceberg.bronze.raw_tickets` via pyiceberg
+11. Runs `06-bulk-bronze` job: year-partitioned CTAS/INSERT into `iceberg.bronze.stg_bronze_tickets` (5 batches × ~2M rows, avoids Trino OOM)
+12. Runs `07-bulk-silver` job: year-partitioned dedup+transform into `iceberg.silver.stg_silver_tickets`
+13. Deploys Airflow; triggers one `lakehouse_daily` run to populate gold dims/facts and MySQL cache
+14. Deploys Metabase, then runs `05-metabase-setup` job to create 2 dashboards (日報 + 即時監控)
+15. Deploys Data Source POD (`data-source` Deployment + ClusterIP Service)
+16. Prints all service URLs and credentials via `show_services.sh`
 
 **Watch deployment progress / 觀察部署進度：**
 
@@ -300,6 +307,8 @@ mysql-*                       1/1     Running     0
 polaris-*                     2/2     Running     0
 postgres-*                    1/1     Running     0
 trino-*                       1/1     Running     0
+bulk-bronze-*                 0/1     Completed   0
+bulk-silver-*                 0/1     Completed   0
 generate-tickets-*            0/1     Completed   0
 metabase-setup-*              0/1     Completed   0
 minio-init-*                  0/1     Completed   0
@@ -351,9 +360,9 @@ Internally this: regenerates `.env`, preserves the MySQL/Postgres root passwords
 
 ### Full rebuild / 完全重建
 
-Tear down all deployments, PVCs, and jobs, then redeploy from scratch with the current `.env`. All Iceberg and MySQL data is lost.
+Tear down all deployments, PVCs, and jobs, then redeploy from scratch with the current `.env`. All Iceberg and MySQL data is lost. Expect ~90 minutes total (seed 10M rows + bulk bronze + bulk silver + initial daily DAG run for gold/cache).
 
-拆除所有 Deployment、PVC 和 Job，然後以當前 `.env` 從零開始重新部署。所有 Iceberg 和 MySQL 資料將遺失。
+拆除所有 Deployment、PVC 和 Job，然後以當前 `.env` 從零開始重新部署。所有 Iceberg 和 MySQL 資料將遺失。預計總時間約 90 分鐘（種子資料 + 批量銅/銀 + 初始每日 DAG 跑金/快取）。
 
 ```bash
 bash init_env.sh        # optional: generate fresh credentials first
@@ -370,7 +379,7 @@ Services exposed via NodePort are accessible directly on `localhost`. MySQL and 
 
 | Service | NodePort URL | Auth |
 |---|---|---|
-| Metabase | http://localhost:30300 | `admin@local.com` / `METABASE_ADMIN_PASSWORD` from `.env` |
+| Metabase | http://localhost:30300 | `METABASE_ADMIN_EMAIL` / `METABASE_ADMIN_PASSWORD` from `.env` |
 | Airflow | http://localhost:30888 | `admin` / `AIRFLOW_ADMIN_PASSWORD` from `.env` |
 | Trino UI | http://localhost:30080 | No login required |
 | MinIO Console | http://localhost:30901 | `MINIO_ROOT_USER` / `MINIO_ROOT_PASSWORD` from `.env` |
@@ -391,7 +400,7 @@ kubectl -n lakehouse port-forward svc/polaris 8181:8181 &
 
 ```bash
 kubectl -n lakehouse exec deployment/trino -- \
-  trino --execute "SELECT COUNT(*) FROM iceberg.raw.raw_tickets" 2>/dev/null | grep -v WARNING
+  trino --execute "SELECT COUNT(*) FROM iceberg.bronze.raw_tickets" 2>/dev/null | grep -v WARNING
 ```
 
 ### Check MySQL cache tables / 查詢 MySQL 快取表
@@ -746,14 +755,14 @@ lakehouse/
 **Key file notes / 關鍵檔案說明：**
 
 - `platform/data_source/app.py` is a pure-stdlib Python HTTP server with `enableServiceLinks: false` in its pod spec (prevents k8s from injecting `DATA_SOURCE_PORT=tcp://...` which would crash `int()` parsing). The pod generates 5–20 rows every 5 minutes into an in-memory deque; `GET /api/tickets/drain` atomically returns and clears the buffer.
-- `platform/init/fetch_and_ingest.py` polls `/api/tickets/drain`, converts ISO timestamps to microsecond epoch for PyArrow, and appends to `iceberg.raw.raw_tickets` via pyiceberg direct write. Called by the `lakehouse_streaming` DAG every 15 minutes.
+- `platform/init/fetch_and_ingest.py` polls `/api/tickets/drain`, converts ISO timestamps to microsecond epoch for PyArrow, and appends to `iceberg.bronze.raw_tickets` via pyiceberg direct write. Called by the `lakehouse_streaming` DAG every 15 minutes.
 - `dbt/models/gold/facts/fact_ticket_hour_wide.sql` is an incremental MERGE model with a 7-dimension composite unique key; watermark covers the trailing 24 hours to absorb late silver updates.
 - `04_generate_tickets.py` writes 10M rows directly to Iceberg via pyiceberg and MinIO, bypassing Trino INSERT. This achieves approximately 200,000–1,000,000 rows per second on typical laptop hardware.
 - `populate_mysql_cache.py` runs aggregation SQL on Trino and bulk-inserts into MySQL using `executemany` with 5,000-row batches. Supports `--hourly-only` flag for the streaming DAG to skip daily table updates.
 - `configmap-trino.yaml` is the only YAML that requires envsubst. It contains `${POLARIS_CLIENT_ID}`, `${POLARIS_CLIENT_SECRET}`, `${MINIO_ROOT_USER}`, and `${MINIO_ROOT_PASSWORD}` placeholders that `deploy.sh` substitutes from `.env` using an inline Python script before applying.
 
 - `platform/data_source/app.py` 是純 stdlib Python HTTP 伺服器，pod spec 設定 `enableServiceLinks: false`（防止 k8s 注入 `DATA_SOURCE_PORT=tcp://...` 造成 `int()` 解析崩潰）。pod 每 5 分鐘向記憶體 deque 生成 5–20 筆資料；`GET /api/tickets/drain` 原子性地返回並清除緩衝區。
-- `platform/init/fetch_and_ingest.py` 輪詢 `/api/tickets/drain`，將 ISO 時間戳轉換為 PyArrow 所需的微秒 epoch，並透過 pyiceberg 直接寫入追加至 `iceberg.raw.raw_tickets`。由 `lakehouse_streaming` DAG 每 15 分鐘呼叫。
+- `platform/init/fetch_and_ingest.py` 輪詢 `/api/tickets/drain`，將 ISO 時間戳轉換為 PyArrow 所需的微秒 epoch，並透過 pyiceberg 直接寫入追加至 `iceberg.bronze.raw_tickets`。由 `lakehouse_streaming` DAG 每 15 分鐘呼叫。
 - `dbt/models/gold/facts/fact_ticket_hour_wide.sql` 是增量 MERGE 模型，具備 7 維複合 unique_key；水位線涵蓋過去 24 小時以吸收遲到的 silver 更新。
 - `04_generate_tickets.py` 寫入 1,000 萬筆資料，透過 pyiceberg 和 MinIO 直接寫入 Iceberg，在典型筆電硬體上可達約 200,000–1,000,000 行/秒。
 - `populate_mysql_cache.py` 在 Trino 執行聚合 SQL，以 5,000 行批次透過 `executemany` 大量插入 MySQL。支援 `--hourly-only` 旗標供串流 DAG 跳過日報表更新。
@@ -827,6 +836,6 @@ python3 platform/init/e2e_smoke_test.py --skip-airflow   # local fallback
 
 MIT
 
-**Note on data:** Synthetic ticket data generated by `bulk_load_parquet.py` and `04_generate_tickets.py` is randomly generated using NumPy. It mimics the schema of real customer support tickets but contains no real user data.
+**Note on data:** Synthetic ticket data generated by `04_generate_tickets.py` is randomly generated using NumPy. It mimics the schema of real customer support tickets but contains no real user data. The bulk-bronze and bulk-silver jobs then ETL this seed data into the Medallion layers.
 
-**資料說明：** 由 `bulk_load_parquet.py` 與 `04_generate_tickets.py` 產生的合成問題單資料使用 NumPy 隨機生成，模仿真實客服問題單結構，但不含任何真實使用者資料。
+**資料說明：** 由 `04_generate_tickets.py` 產生的合成問題單資料使用 NumPy 隨機生成，模仿真實客服問題單結構，但不含任何真實使用者資料。接著由 bulk-bronze 和 bulk-silver Job 將種子資料 ETL 至 Medallion 各層。

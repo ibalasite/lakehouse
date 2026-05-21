@@ -206,6 +206,8 @@ log "  Building init-scripts ConfigMap from platform/init/ ..."
 ${KC} create configmap init-scripts \
     --from-file=04_generate_tickets.py="${INIT_DIR}/04_generate_tickets.py" \
     --from-file=05_metabase_setup.py="${INIT_DIR}/05_metabase_setup.py" \
+    --from-file=06_bulk_bronze.py="${INIT_DIR}/06_bulk_bronze.py" \
+    --from-file=07_bulk_silver.py="${INIT_DIR}/07_bulk_silver.py" \
     --dry-run=client -o yaml \
     | kubectl --context="${CONTEXT}" apply -f -
 
@@ -320,6 +322,28 @@ elif [[ "${SKIP_SEED}" == "true" ]]; then
     warn "Skipping seed data generation (--skip-seed)"
 fi
 
+# ── 13c. Bulk-load bronze (year-partitioned, avoids Trino OOM) ────────────────
+if [[ "${SKIP_JOBS}" == "false" && "${SKIP_SEED}" == "false" ]]; then
+    step "Bulk-loading stg_bronze_tickets (5 year batches)"
+    ${KC} delete job bulk-bronze --ignore-not-found
+    kubectl --context="${CONTEXT}" apply -f "${SCRIPT_DIR}/jobs/06-bulk-bronze.yaml"
+    log "  Waiting for bulk-bronze job (up to 40m)..."
+    ${KC} wait job/bulk-bronze --for=condition=complete --timeout=2400s \
+        || { ${KC} logs job/bulk-bronze; fail "bulk-bronze job failed"; }
+    success "stg_bronze_tickets ready"
+fi
+
+# ── 13d. Bulk-load silver (year-partitioned ROW_NUMBER dedup) ─────────────────
+if [[ "${SKIP_JOBS}" == "false" && "${SKIP_SEED}" == "false" ]]; then
+    step "Bulk-loading stg_silver_tickets (5 year batches)"
+    ${KC} delete job bulk-silver --ignore-not-found
+    kubectl --context="${CONTEXT}" apply -f "${SCRIPT_DIR}/jobs/07-bulk-silver.yaml"
+    log "  Waiting for bulk-silver job (up to 40m)..."
+    ${KC} wait job/bulk-silver --for=condition=complete --timeout=2400s \
+        || { ${KC} logs job/bulk-silver; fail "bulk-silver job failed"; }
+    success "stg_silver_tickets ready"
+fi
+
 # ── 14. Airflow ────────────────────────────────────────────────────────────────
 step "Deploying Airflow"
 envsubst_file "${SCRIPT_DIR}/airflow.yaml" \
@@ -333,6 +357,17 @@ for dag in lakehouse_streaming lakehouse_hourly lakehouse_daily lakehouse_backfi
     ${KC} exec deployment/airflow-scheduler -- airflow dags unpause "${dag}" 2>/dev/null \
         && log "    ✓ ${dag} unpaused" || log "    ! ${dag} not found (skip)"
 done
+
+# Trigger one initial lakehouse_daily run so gold dims + facts + MySQL cache are
+# populated immediately after deploy (without this they would wait until 02:00 UTC).
+if [[ "${SKIP_JOBS}" == "false" && "${SKIP_SEED}" == "false" ]]; then
+    log "  Triggering initial lakehouse_daily run (gold dims/facts + MySQL cache)..."
+    ${KC} exec deployment/airflow-scheduler -- \
+        airflow dags trigger lakehouse_daily --run-id "init_$(date +%s)" 2>/dev/null \
+        && log "    ✓ lakehouse_daily triggered — runs in background (~15 min)" \
+        || warn "    ! could not trigger lakehouse_daily — run manually if needed"
+fi
+
 success "Airflow ready"
 
 # ── 15. Metabase ──────────────────────────────────────────────────────────────

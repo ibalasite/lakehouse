@@ -76,8 +76,9 @@ MINIO_PASS         = _require_env("MINIO_ROOT_PASSWORD")
 POLARIS_ID         = _require_env("POLARIS_CLIENT_ID")
 POLARIS_SECRET     = _require_env("POLARIS_CLIENT_SECRET")
 
-# EDD section 6.2: bucket is lakehouse-local; source data goes to bronze namespace
-BUCKET             = os.environ.get("MINIO_BUCKET", "lakehouse-local")
+BUCKET             = os.environ.get("MINIO_BUCKET",    "lakehouse-local")
+# Polaris catalog name — distinct from the S3 bucket name
+POLARIS_CATALOG    = os.environ.get("POLARIS_CATALOG", "lakehouse")
 ICEBERG_TABLE      = ("bronze", "raw_tickets")
 
 
@@ -152,7 +153,7 @@ def get_catalog() -> RestCatalog:
     return RestCatalog(
         name="polaris",
         uri=f"http://{POLARIS_HOST}:{POLARIS_PORT}/api/catalog",
-        warehouse=BUCKET,
+        warehouse=POLARIS_CATALOG,
         credential=f"{POLARIS_ID}:{POLARIS_SECRET}",
         scope="PRINCIPAL_ROLE:ALL",
         **{

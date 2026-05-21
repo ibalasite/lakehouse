@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # show_services.sh — Print all service URLs and current credentials.
 # Reads live credentials from .env in the project root.
+# Called automatically at the end of deploy.sh; also callable at any time.
 #
 # Usage:
-#   ./k8s/show_services.sh           # from project root
+#   ./k8s/show_services.sh           # standalone — shows current creds
 #   bash k8s/show_services.sh        # explicit bash
 
 set -euo pipefail
@@ -37,9 +38,12 @@ PYEOF
 MINIO_USER=$(_env MINIO_ROOT_USER)
 MINIO_PASS=$(_env MINIO_ROOT_PASSWORD)
 AIRFLOW_PASS=$(_env AIRFLOW_ADMIN_PASSWORD)
+METABASE_EMAIL=$(_env METABASE_ADMIN_EMAIL 2>/dev/null || echo "admin@local.com")
 METABASE_PASS=$(_env METABASE_ADMIN_PASSWORD)
 MYSQL_USER=$(_env MYSQL_USER)
 MYSQL_PASS=$(_env MYSQL_PASSWORD)
+POLARIS_ID=$(_env POLARIS_CLIENT_ID)
+POLARIS_SECRET=$(_env POLARIS_CLIENT_SECRET)
 
 BOLD=$'\033[1m'; GREEN=$'\033[0;32m'; CYAN=$'\033[0;36m'
 YELLOW=$'\033[0;33m'; DIM=$'\033[2m'; RESET=$'\033[0m'
@@ -54,7 +58,7 @@ printf '\n'
 printf '%s── WEB UIs (browser access)%s\n' "${CYAN}" "${RESET}"
 printf '\n'
 printf '  %-18s %s\n' "Metabase"        "http://localhost:30300"
-printf '  %-18s %s\n' "  user:"         "admin@local.com"
+printf '  %-18s %s\n' "  user:"         "${METABASE_EMAIL}"
 printf '  %-18s %s\n' "  pass:"         "${METABASE_PASS}"
 printf '\n'
 printf '  %-18s %s\n' "Airflow"         "http://localhost:30888"
@@ -89,13 +93,15 @@ printf '\n'
 printf '%s── ClusterIP services (port-forward or kubectl exec)%s\n' "${CYAN}" "${RESET}"
 printf '\n'
 printf '  %-18s %s\n' "Polaris API"     "http://polaris:8181  (cluster-internal)"
+printf '  %-18s %s\n' "  client_id:"    "${POLARIS_ID}"
+printf '  %-18s %s\n' "  client_secret:" "${POLARIS_SECRET}"
 printf '  %s# Port-forward Polaris to host:%s\n' "${DIM}" "${RESET}"
 printf '  kubectl -n lakehouse port-forward svc/polaris 8181:8181 &\n'
 printf '\n'
 printf '  %-18s %s\n' "Data Source"     "http://datasource:8080  (cluster-internal)"
-printf '  %s# Drain buffer manually (for testing):%s\n' "${DIM}" "${RESET}"
+printf '  %s# Check buffer size:%s\n' "${DIM}" "${RESET}"
 printf '  kubectl -n lakehouse exec deployment/airflow-scheduler -- \\\n'
-printf '    curl -s http://datasource:8080/api/tickets/drain | python3 -c "import sys,json; d=json.load(sys.stdin); print(len(d),'"'"'rows'"'"')"\n'
+printf '    python3 -c "import urllib.request,json; r=urllib.request.urlopen('"'"'http://datasource:8080/health'"'"'); print(json.load(r))"\n'
 printf '\n'
 
 # ── Quick status ──────────────────────────────────────────────────────────────

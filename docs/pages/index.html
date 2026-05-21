@@ -442,10 +442,10 @@
     <h2>Quick Start / 快速開始</h2>
     <div class="platform-label">macOS / Linux / WSL2</div>
 <pre><code class="language-bash">bash init_env.sh       # generates .env with fresh random credentials
-./k8s/deploy.sh        # deploys the full stack (~25 min on first run)</code></pre>
+./k8s/deploy.sh        # deploys the full stack (~90 min on first run — includes 10M-row seed + bulk load)</code></pre>
     <div class="platform-label">Windows (PowerShell)</div>
 <pre><code class="language-powershell">.\init_env.ps1         # generates .env with fresh random credentials
-.\k8s\deploy.ps1       # deploys the full stack (~25 min on first run)</code></pre>
+.\k8s\deploy.ps1       # deploys the full stack (~90 min on first run — includes 10M-row seed + bulk load)</code></pre>
     <p style="margin:12px 0 0;font-size:13.5px;">
       Then open <a href="http://localhost:30300">http://localhost:30300</a> and log in with the credentials printed by the init script. The <strong>客服問題單日報</strong> dashboard with 5 charts will be ready.
     </p>
@@ -509,7 +509,7 @@
                Jobs (run in order):
                01-minio-init       → creates lakehouse bucket
                02-polaris-bootstrap → registers catalog + principal
-               04-generate-tickets → 04_generate_tickets.py → Iceberg raw.raw_tickets (seed ~10M rows)
+               04-generate-tickets → 04_generate_tickets.py → Iceberg bronze.raw_tickets (seed ~10M rows)
                05-metabase-setup   → 05_metabase_setup.py → 2 dashboards (日報 + 即時監控)</code></pre>
     </div>
 
@@ -617,7 +617,7 @@ cd lakehouse
 ║    pass: &lt;20-char random&gt;
 ╠══════════════════════════════════════════════════════╣
 ║  Metabase       http://localhost:30300
-║    user: admin@local.com
+║    user: &lt;METABASE_ADMIN_EMAIL from .env&gt;
 ║    pass: &lt;20-char random&gt;
 ╚══════════════════════════════════════════════════════╝</code></pre>
 
@@ -638,7 +638,7 @@ cd lakehouse
       <li>Runs <code>01-minio-init</code> job: creates the <code>lakehouse</code> bucket</li>
       <li>Runs <code>02-polaris-bootstrap</code> job: registers the Iceberg catalog and <code>trino-svc</code> principal</li>
       <li>Deploys Trino</li>
-      <li>Runs <code>04-generate-tickets</code> job: writes synthetic Iceberg data via <code>bulk_load_parquet.py</code></li>
+      <li>Runs <code>04-generate-tickets</code> job: writes 10M synthetic rows to <code>iceberg.bronze.raw_tickets</code> via pyiceberg; then <code>06-bulk-bronze</code> and <code>07-bulk-silver</code> ETL them through bronze→silver in year-partitioned batches</li>
       <li>Deploys Airflow (webserver + scheduler)</li>
       <li>Deploys Metabase, then runs <code>05-metabase-setup</code> job to create 2 dashboards (日報 + 即時監控)</li>
       <li>Deploys Data Source POD (<code>data-source</code> Deployment + ClusterIP Service)</li>
@@ -703,7 +703,7 @@ polaris-bootstrap-*           0/1     Completed   0</code></pre>
     <table>
       <thead><tr><th>Service</th><th>URL</th><th>Auth</th></tr></thead>
       <tbody>
-        <tr><td><strong>Metabase</strong></td><td><a href="http://localhost:30300">http://localhost:30300</a></td><td><code>admin@local.com</code> / <code>METABASE_ADMIN_PASSWORD</code> from <code>.env</code></td></tr>
+        <tr><td><strong>Metabase</strong></td><td><a href="http://localhost:30300">http://localhost:30300</a></td><td><code>METABASE_ADMIN_EMAIL / METABASE_ADMIN_PASSWORD from .env</td></tr>
         <tr><td><strong>Airflow</strong></td><td><a href="http://localhost:30888">http://localhost:30888</a></td><td><code>admin</code> / <code>AIRFLOW_ADMIN_PASSWORD</code> from <code>.env</code></td></tr>
         <tr><td><strong>Trino UI</strong></td><td><a href="http://localhost:30080">http://localhost:30080</a></td><td>No login required</td></tr>
         <tr><td><strong>MinIO Console</strong></td><td><a href="http://localhost:30901">http://localhost:30901</a></td><td><code>MINIO_ROOT_USER</code> / <code>MINIO_ROOT_PASSWORD</code> from <code>.env</code></td></tr>
@@ -723,7 +723,7 @@ kubectl -n lakehouse port-forward svc/polaris 8181:8181 &amp;</code></pre>
 
     <h3>Check Iceberg row count via Trino</h3>
 <pre><code class="language-bash">kubectl -n lakehouse exec deployment/trino -- \
-  trino --execute "SELECT COUNT(*) FROM iceberg.raw.raw_tickets" 2&gt;/dev/null | grep -v WARNING</code></pre>
+  trino --execute "SELECT COUNT(*) FROM iceberg.bronze.raw_tickets" 2&gt;/dev/null | grep -v WARNING</code></pre>
 
     <h3>Check MySQL cache tables</h3>
 <pre><code class="language-bash">MYSQL_PW=$(grep ^MYSQL_PASSWORD .env | cut -d= -f2)
@@ -746,7 +746,7 @@ kubectl -n lakehouse wait job/metabase-setup --for=condition=complete --timeout=
     <p>The test performs these steps in order:</p>
     <ol>
       <li><strong>Connectivity check:</strong> verifies all 6 services are reachable</li>
-      <li><strong>Data generation:</strong> writes 500 synthetic ticket rows for today into <code>iceberg.raw.raw_tickets</code> via pyiceberg</li>
+      <li><strong>Data generation:</strong> writes 500 synthetic ticket rows for today into <code>iceberg.bronze.raw_tickets via pyiceberg</li>
       <li><strong>Airflow trigger:</strong> calls the Airflow REST API to trigger the <code>lakehouse_hourly</code> DAG</li>
       <li><strong>DAG poll:</strong> polls until the DAG run reaches <code>success</code> or <code>failed</code> (default 600s timeout)</li>
       <li><strong>MySQL verify:</strong> confirms <code>cache_ticket_hourly</code> contains rows for today's date</li>
@@ -834,7 +834,7 @@ curl -s -X POST http://localhost:30888/api/v1/dags/lakehouse_backfill/dagRuns \
   <section id="metabase">
     <h2 class="section-title">10. Metabase Dashboard <span class="zh">Metabase 儀表板</span></h2>
     <p><strong>URL:</strong> <a href="http://localhost:30300">http://localhost:30300</a><br>
-    <strong>Login:</strong> <code>admin@local.com</code> / value of <code>METABASE_ADMIN_PASSWORD</code> in <code>.env</code></p>
+    <strong>Login:</strong> <code>METABASE_ADMIN_EMAIL</code> / <code>METABASE_ADMIN_PASSWORD</code> in <code>.env</code></p>
     <p>Two dashboards are created automatically by <code>05_metabase_setup.py</code>.</p>
 
     <h3>客服問題單日報 (Daily Report)</h3>
@@ -972,7 +972,7 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "changeme")  # WRONG — never
         <tr><td><code>POSTGRES_PASSWORD</code></td><td>PostgreSQL password for Airflow metadata DB</td></tr>
         <tr><td><code>AIRFLOW_ADMIN_PASSWORD</code></td><td>Airflow <code>admin</code> user password</td></tr>
         <tr><td><code>AIRFLOW__CORE__FERNET_KEY</code></td><td>Fernet key for Airflow connection encryption</td></tr>
-        <tr><td><code>METABASE_ADMIN_PASSWORD</code></td><td>Metabase <code>admin@local.com</code> password</td></tr>
+        <tr><td><code>METABASE_ADMIN_PASSWORD</code></td><td>Metabase admin account password</td></tr>
       </tbody>
     </table>
     </div>
@@ -1010,7 +1010,7 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "changeme")  # WRONG — never
 │   │       └── pipeline_hourly.py       # lakehouse_hourly DAG (smoke test)
 │   └── init/
 │       ├── fetch_and_ingest.py          # Drain data-source pod → Iceberg via pyiceberg
-│       ├── bulk_load_parquet.py         # Fast seed writer (~200k–1M rows/sec)
+│       ├── 06_bulk_bronze.py + 07_bulk_silver.py  # Year-partitioned bulk ETL (avoids Trino OOM–1M rows/sec)
 │       ├── populate_mysql_cache.py      # Trino → MySQL aggregation (--hourly-only support)
 │       ├── 05_metabase_setup.py         # Metabase 2-dashboard auto-setup via REST API
 │       └── e2e_smoke_test.py            # End-to-end pipeline verification (6-step)
@@ -1024,12 +1024,12 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "changeme")  # WRONG — never
 │       └── dims/                        # dim_date, dim_catsub, dim_perform, …
 └── contracts/metrics/
     ├── field_registry.yml               # EDD metric contract: 12 ticket KPI fields
-    └── namespace_registry.yml           # EDD namespace → iceberg.raw.raw_tickets</code></pre>
+    └── namespace_registry.yml           # EDD namespace → iceberg.bronze.raw_tickets</code></pre>
 
     <h3>Key file notes</h3>
     <ul>
       <li><strong><code>platform/data_source/app.py</code></strong> is a pure-stdlib Python HTTP server with <code>enableServiceLinks: false</code> in its pod spec to prevent k8s from injecting <code>DATA_SOURCE_PORT=tcp://...</code> which would crash <code>int()</code> parsing. The pod generates 5–20 rows every 5 minutes into a thread-safe in-memory deque; <code>GET /api/tickets/drain</code> atomically returns and clears the buffer.</li>
-      <li><strong><code>platform/init/fetch_and_ingest.py</code></strong> polls <code>/api/tickets/drain</code>, converts ISO timestamps to microsecond epoch for PyArrow, and appends to <code>iceberg.raw.raw_tickets</code> via pyiceberg direct write. Called every 15 minutes by <code>lakehouse_streaming</code>.</li>
+      <li><strong><code>platform/init/fetch_and_ingest.py</code></strong> polls <code>/api/tickets/drain</code>, converts ISO timestamps to microsecond epoch for PyArrow, and appends to <code>iceberg.bronze.raw_tickets via pyiceberg direct write. Called every 15 minutes by <code>lakehouse_streaming</code>.</li>
       <li><strong><code>dbt/models/gold/facts/fact_ticket_hour_wide.sql</code></strong> is an incremental MERGE model with a 7-dimension composite unique key; watermark covers the trailing 24 hours to absorb late silver updates.</li>
       <li><strong><code>04_generate_tickets.py</code></strong> writes 10M rows directly to Iceberg via pyiceberg and MinIO, bypassing Trino INSERT. This achieves approximately 200,000–1,000,000 rows per second on typical laptop hardware.</li>
       <li><strong><code>populate_mysql_cache.py</code></strong> runs aggregation SQL on Trino and bulk-inserts into MySQL using <code>executemany</code> with 5,000-row batches. Supports <code>--hourly-only</code> flag for the streaming DAG.</li>
