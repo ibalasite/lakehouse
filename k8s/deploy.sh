@@ -251,18 +251,14 @@ kubectl --context="${CONTEXT}" apply -f "${SCRIPT_DIR}/minio.yaml"
 kubectl --context="${CONTEXT}" apply -f "${SCRIPT_DIR}/mysql.yaml"
 kubectl --context="${CONTEXT}" apply -f "${SCRIPT_DIR}/postgres.yaml"
 
-# ── 7. Polaris ────────────────────────────────────────────────────────────────
-step "Deploying Apache Polaris"
-kubectl --context="${CONTEXT}" apply -f "${SCRIPT_DIR}/polaris.yaml"
-
-# ── 8. Wait for core services ──────────────────────────────────────────────────
+# ── 7. Wait for core services ──────────────────────────────────────────────────
 step "Waiting for core services to become ready"
 
 wait_ready minio     120
 wait_ready mysql     180
 wait_ready postgres   90
 
-# ── 9. PostgreSQL init job (create polaris database) ──────────────────────────
+# ── 8. PostgreSQL init job (create polaris database) ──────────────────────────
 if [[ "${SKIP_JOBS}" == "false" ]]; then
     step "Initialising PostgreSQL: creating polaris database"
     ${KC} delete job postgres-init --ignore-not-found
@@ -273,7 +269,24 @@ if [[ "${SKIP_JOBS}" == "false" ]]; then
     success "PostgreSQL polaris database ready"
 fi
 
-# ── 10. MinIO init job ────────────────────────────────────────────────────────
+# ── 9. Polaris JDBC schema + realm bootstrap (polaris-admin-tool) ─────────────
+# Creates polaris_schema DDL and seeds initial realm/principal into PostgreSQL.
+# Must run BEFORE Polaris server starts so relational-jdbc finds the schema.
+if [[ "${SKIP_JOBS}" == "false" ]]; then
+    step "Bootstrapping Polaris JDBC schema and realm in PostgreSQL"
+    ${KC} delete job polaris-schema-init --ignore-not-found
+    kubectl --context="${CONTEXT}" apply -f "${SCRIPT_DIR}/jobs/00b-polaris-schema-init.yaml"
+    log "  Waiting for polaris-schema-init job to complete..."
+    ${KC} wait job/polaris-schema-init --for=condition=complete --timeout=180s \
+        || { ${KC} logs job/polaris-schema-init; fail "polaris-schema-init job failed"; }
+    success "Polaris JDBC schema and realm seeded in PostgreSQL"
+fi
+
+# ── 10. Deploy Polaris (after polaris_schema exists in PostgreSQL) ────────────
+step "Deploying Apache Polaris (PostgreSQL JDBC persistence)"
+kubectl --context="${CONTEXT}" apply -f "${SCRIPT_DIR}/polaris.yaml"
+
+# ── 11. MinIO init job (parallel-safe; runs after Polaris is deployed) ────────
 if [[ "${SKIP_JOBS}" == "false" ]]; then
     step "Running MinIO bucket initialisation job"
     ${KC} delete job minio-init --ignore-not-found
@@ -284,8 +297,8 @@ if [[ "${SKIP_JOBS}" == "false" ]]; then
     success "MinIO bucket lakehouse-local created"
 fi
 
-# ── 11. Polaris bootstrap job ─────────────────────────────────────────────────
-step "Waiting for Polaris to be ready (PostgreSQL persistence)"
+# ── 12. Polaris bootstrap job ─────────────────────────────────────────────────
+step "Waiting for Polaris to be ready"
 wait_ready polaris 300
 
 if [[ "${SKIP_JOBS}" == "false" ]]; then

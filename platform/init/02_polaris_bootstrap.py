@@ -11,7 +11,8 @@ Steps performed:
   4. Create the 'lakehouse' catalog (INTERNAL type, S3 base location)
   5. Create a catalog role 'all_access' and grant ALL privileges
   6. Create a principal role and assign it to trino-svc
-  7. Create namespaces: raw, bronze, silver, gold, cache
+  7. Assign all_access_role to the bootstrap root principal (Trino uses root creds)
+  8. Create namespaces: bronze, silver, gold, cache
 
 Credentials are read exclusively from environment variables.
 No secrets are hard-coded in this file.
@@ -51,7 +52,7 @@ POLARIS_CATALOG_BASE = os.environ.get(
     "POLARIS_CATALOG_URL", "http://localhost:8181/api/catalog/v1"
 )
 POLARIS_MGMT_BASE = os.environ.get(
-    "POLARIS_MGMT_URL", "http://localhost:8182/management/v1"
+    "POLARIS_MGMT_URL", "http://localhost:8181/api/management/v1"
 )
 CLIENT_ID = _require_env("POLARIS_CLIENT_ID")
 CLIENT_SECRET = _require_env("POLARIS_CLIENT_SECRET")
@@ -240,6 +241,19 @@ def assign_catalog_role(token: str) -> None:
     })
 
 
+def assign_root_principal_role(token: str) -> None:
+    """Grant the realm bootstrap principal (root) the all_access_role.
+
+    Trino authenticates as root using POLARIS_CLIENT_ID/SECRET.  Without this
+    assignment the root principal has only service_admin/catalog_admin, which
+    lacks the TABLE_DROP_WITH_PURGE privilege needed by dbt incremental models.
+    """
+    log.info("Step 7b: Assigning '%s' to bootstrap principal 'root' ...", PRINCIPAL_ROLE_NAME)
+    put(token, "/principals/root/principal-roles", {
+        "principalRole": {"name": PRINCIPAL_ROLE_NAME},
+    })
+
+
 def create_namespaces(token: str) -> None:
     log.info("Step 8: Creating namespaces %s ...", NAMESPACES)
     for ns in NAMESPACES:
@@ -264,6 +278,7 @@ def main() -> None:
     create_principal_role(token)
     assign_principal_role(token)
     assign_catalog_role(token)
+    assign_root_principal_role(token)
     create_namespaces(token)
 
     log.info("")

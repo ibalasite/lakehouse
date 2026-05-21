@@ -20,7 +20,7 @@ data:
 
   jvm.config: |
     -server
-    -Xmx3500m
+    -Xmx4000m
     -XX:MaxDirectMemorySize=512m
     -Duser.timezone=Asia/Taipei
     -XX:InitialRAMPercentage=30
@@ -52,6 +52,7 @@ data:
     iceberg.rest-catalog.oauth2.credential=${POLARIS_CLIENT_ID}:${POLARIS_CLIENT_SECRET}
     iceberg.rest-catalog.vended-credentials-enabled=false
     iceberg.unique-table-location=true
+    iceberg.register-table-procedure.enabled=true
     fs.native-s3.enabled=true
     s3.endpoint=http://minio.lakehouse.svc.cluster.local:9000
     s3.path-style-access=true

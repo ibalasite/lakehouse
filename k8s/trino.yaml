@@ -63,9 +63,9 @@ spec:
             failureThreshold: 5
           resources:
             requests:
-              memory: 768Mi
+              memory: 1Gi
             limits:
-              memory: 5Gi
+              memory: 6Gi
       volumes:
         - name: config
           configMap:

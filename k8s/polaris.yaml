@@ -48,6 +48,17 @@ spec:
               value: http://10.43.219.27:9000
             - name: quarkus.http.port
               value: "8181"
+            # ── PostgreSQL persistence (AC-02) ──────────────────────────────────
+            - name: POLARIS_PERSISTENCE_TYPE
+              value: "relational-jdbc"
+            - name: QUARKUS_DATASOURCE_USERNAME
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: POSTGRES_USER}
+            - name: QUARKUS_DATASOURCE_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: POSTGRES_PASSWORD}
+            - name: QUARKUS_DATASOURCE_JDBC_URL
+              value: "jdbc:postgresql://postgres:5432/polaris"
             # ── Iceberg drop-with-purge (required for dbt table materializations) ─
             - name: POLARIS_FEATURE_DROP_WITH_PURGE_ENABLED
               value: "true"
