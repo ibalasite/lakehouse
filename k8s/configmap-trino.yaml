@@ -23,7 +23,8 @@ data:
   jvm.config: |
     -server
     -Xmx2000m
-    -XX:MaxDirectMemorySize=512m
+    -XX:MaxDirectMemorySize=256m
+    -XX:MaxMetaspaceSize=512m
     -Duser.timezone=Asia/Taipei
     -XX:G1HeapRegionSize=16M
     -XX:+ExplicitGCInvokesConcurrent
