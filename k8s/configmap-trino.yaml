@@ -8,17 +8,20 @@ data:
     coordinator=true
     node-scheduler.include-coordinator=true
     http-server.http.port=8080
-    query.max-memory=1GB
-    query.max-memory-per-node=800MB
+    query.max-memory=3GB
+    query.max-memory-per-node=2200MB
     query.max-execution-time=30m
     query.max-run-time=60m
     discovery.uri=http://localhost:8080
     protocol.v1.alternate-header-name=Presto
-    sql.forced-session-time-zone=${TZ}
+    sql.forced-session-time-zone=Asia/Taipei
+    task.concurrency=2
+    task.max-worker-threads=4
 
   jvm.config: |
     -server
-    -Xmx1250m
+    -Xmx3500m
+    -XX:MaxDirectMemorySize=512m
     -Duser.timezone=Asia/Taipei
     -XX:InitialRAMPercentage=30
     -XX:MaxRAMPercentage=75

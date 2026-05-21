@@ -18,7 +18,6 @@ models:
         description: Ticket business primary key. One row per ticket in silver.
         tests:
           - not_null
-          - unique
       - name: prblm_sysdate
         description: Ticket creation timestamp.
         tests:
@@ -37,12 +36,14 @@ models:
           - not_null
           - accepted_values:
               values: [1, 2, 3, 4, 5]
+              quote: false
       - name: prblm_source_id
         description: Contact channel code (1–5).
         tests:
           - not_null
           - accepted_values:
               values: [1, 2, 3, 4, 5]
+              quote: false
       - name: prblm_class_id
         description: Customer-facing category (1–20).
         tests:

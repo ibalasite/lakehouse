@@ -34,12 +34,14 @@ models:
           - not_null
           - accepted_values:
               values: [1, 2, 3, 4, 5]
+              quote: false
       - name: prblm_source_id
         description: Contact channel code (1–5).
         tests:
           - not_null
           - accepted_values:
               values: [1, 2, 3, 4, 5]
+              quote: false
       - name: prblm_class_id
         description: Customer-facing category (1–20).
         tests:

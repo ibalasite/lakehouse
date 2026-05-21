@@ -232,10 +232,20 @@ Failures are logged to `/tmp/pipeline_failures.log`.
         dbt_gold_facts = BashOperator(
             task_id="dbt_gold_facts",
             bash_command=_dbt_run("fact_ticket_day_wide"),
-            doc_md="Incremental merge into the wide fact table partitioned by date.",
+            doc_md="Incremental merge into the daily-granularity wide fact table.",
         )
 
-        dbt_gold_dims >> dbt_gold_facts
+        dbt_gold_hour_facts = BashOperator(
+            task_id="dbt_gold_hour_facts",
+            bash_command=_dbt_run("fact_ticket_hour_wide"),
+            doc_md=(
+                "Incremental merge into the hourly-granularity wide fact table. "
+                "Runs after dbt_gold_facts to avoid concurrent 10M-row scans "
+                "that exhaust the Trino JVM heap."
+            ),
+        )
+
+        dbt_gold_dims >> dbt_gold_facts >> dbt_gold_hour_facts
 
     # ── 4. MySQL cache ────────────────────────────────────────────────────────
     dbt_cache = BashOperator(
