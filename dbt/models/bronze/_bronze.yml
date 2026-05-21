@@ -49,10 +49,10 @@ models:
       - name: prblm_intclass_id
         description: Internal service category (1–30).
       - name: prblm_perform_id
-        description: SLA tier code. 1=急件(8hr), 2=特急(4hr), NULL=一般(24hr).
+        description: SLA tier code. 1=急件(8hr), 2=特急(4hr), 99=一般(24hr), NULL=一般(24hr).
         tests:
           - accepted_values:
-              values: [1, 2]
+              values: [1, 2, 99]
               quote: false
               # NULL is valid (standard tier); accepted_values skips NULLs by default
       - name: prblm_complain_id

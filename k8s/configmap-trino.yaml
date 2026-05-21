@@ -8,23 +8,23 @@ data:
     coordinator=true
     node-scheduler.include-coordinator=true
     http-server.http.port=8080
-    query.max-memory=3GB
-    query.max-memory-per-node=2200MB
+    query.max-memory=1500MB
+    query.max-memory-per-node=1200MB
     query.max-execution-time=30m
     query.max-run-time=60m
+    spill-enabled=true
+    spiller-spill-path=/tmp/trino-spill
     discovery.uri=http://localhost:8080
     protocol.v1.alternate-header-name=Presto
     sql.forced-session-time-zone=Asia/Taipei
-    task.concurrency=2
-    task.max-worker-threads=4
+    task.concurrency=1
+    task.max-worker-threads=2
 
   jvm.config: |
     -server
-    -Xmx4000m
+    -Xmx2000m
     -XX:MaxDirectMemorySize=512m
     -Duser.timezone=Asia/Taipei
-    -XX:InitialRAMPercentage=30
-    -XX:MaxRAMPercentage=75
     -XX:G1HeapRegionSize=16M
     -XX:+ExplicitGCInvokesConcurrent
     -XX:+ExitOnOutOfMemoryError

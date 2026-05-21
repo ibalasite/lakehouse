@@ -36,8 +36,9 @@ models:
         +schema: gold
     cache:
       +materialized: table
-      +database: mysql
-      +schema: lakehouse_cache
+      # database/schema are target-driven:
+      #   --target prod        → iceberg.cache.* (model config: schema='cache')
+      #   --target mysql_cache → mysql.lakehouse_cache.* (generate_schema_name returns target.schema)
 
 vars:
   watermark_lookback_days: 3

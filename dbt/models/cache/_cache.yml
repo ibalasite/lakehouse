@@ -51,8 +51,8 @@ models:
       materialized: table
       schema: cache
     columns:
-      - name: date_sk
-        description: Ticket creation date (alias of prblm_date). Partition key for MySQL queries.
+      - name: prblm_date
+        description: Ticket creation date. Partition key for MySQL queries.
         tests:
           - not_null
       - name: catsub_id

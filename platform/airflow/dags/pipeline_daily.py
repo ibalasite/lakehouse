@@ -109,9 +109,11 @@ def _dbt_test() -> str:
     import shlex
     return (
         f"cd {shlex.quote(DBT_DIR)} && "
+        f"PATH=/pip-packages/bin:$PATH "
         f"dbt test "
         f"--profiles-dir {shlex.quote(DBT_PROFILES_DIR)} "
-        f"--target {shlex.quote(DBT_TARGET)}"
+        f"--target {shlex.quote(DBT_TARGET)} "
+        f"--threads 1"
     )
 
 

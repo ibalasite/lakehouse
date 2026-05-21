@@ -14,7 +14,9 @@
 
   One row per (prblm_date, prblm_hour, dimension_combo, field_code).
   Each 15-min run appends only NEW silver rows (prblm_sysdate watermark).
-  No full-table scan, no MERGE — eliminates OOMKill.
+
+  CROSS JOIN UNNEST replaces the original 10 UNION ALL pattern to avoid
+  Trino re-executing the GROUP BY CTE 10 times (OOMKill on 10M-row silver).
 
   Lineage:  stg_silver_tickets → fact_ticket_hour_long (canonical)
                                → fact_ticket_hour_wide (PIVOT, serving)
@@ -45,6 +47,11 @@ WITH new_silver AS (
     )
     FROM {{ this }}
   )
+  {% else %}
+  -- Full-refresh initial load: limit to last 30 days.
+  -- 90-day initial load OOMs on 10GB dev node (4M rows too large for CTAS).
+  -- Subsequent incremental appends cover all future arrivals.
+  WHERE prblm_date >= CURRENT_DATE - INTERVAL '30' DAY
   {% endif %}
 ),
 
@@ -73,83 +80,61 @@ agg AS (
     catsub_id, prblm_source_id, prblm_class_id, prblm_perform_id, prblm_status_id
 )
 
--- EAV unpivot: one row per (grain, field_code) — 10 metric fields
-SELECT prblm_date, prblm_hour, catsub_id, prblm_source_id, prblm_class_id, prblm_perform_id, prblm_status_id,
-    'total_tickets'                                             AS field_code,
-    {{ stable_hash64_number("'ticket|total_tickets'") }}        AS field_sk,
-    CAST(total_tickets AS DECIMAL(38,12))                       AS value_decimal,
-    CAST(NULL AS DOUBLE)                                        AS value_double,
-    current_timestamp                                           AS updated_at
+-- CROSS JOIN UNNEST: single scan of agg → 10 EAV rows per group.
+-- Eliminates the original 10 UNION ALL pattern that caused Trino to
+-- re-execute the GROUP BY 10 times and OOMKill on large silver tables.
+SELECT
+    prblm_date,
+    prblm_hour,
+    catsub_id,
+    prblm_source_id,
+    prblm_class_id,
+    prblm_perform_id,
+    prblm_status_id,
+    field_code,
+    {{ stable_hash64_number("'ticket|' || field_code") }} AS field_sk,
+    value_decimal,
+    value_double,
+    current_timestamp AS updated_at
 FROM agg
-
-UNION ALL
-
-SELECT prblm_date, prblm_hour, catsub_id, prblm_source_id, prblm_class_id, prblm_perform_id, prblm_status_id,
-    'resolved_tickets',
-    {{ stable_hash64_number("'ticket|resolved_tickets'") }},
-    CAST(resolved_tickets AS DECIMAL(38,12)), CAST(NULL AS DOUBLE), current_timestamp
-FROM agg
-
-UNION ALL
-
-SELECT prblm_date, prblm_hour, catsub_id, prblm_source_id, prblm_class_id, prblm_perform_id, prblm_status_id,
-    'one_shot_resolved',
-    {{ stable_hash64_number("'ticket|one_shot_resolved'") }},
-    CAST(one_shot_resolved AS DECIMAL(38,12)), CAST(NULL AS DOUBLE), current_timestamp
-FROM agg
-
-UNION ALL
-
-SELECT prblm_date, prblm_hour, catsub_id, prblm_source_id, prblm_class_id, prblm_perform_id, prblm_status_id,
-    'complain_tickets',
-    {{ stable_hash64_number("'ticket|complain_tickets'") }},
-    CAST(complain_tickets AS DECIMAL(38,12)), CAST(NULL AS DOUBLE), current_timestamp
-FROM agg
-
-UNION ALL
-
-SELECT prblm_date, prblm_hour, catsub_id, prblm_source_id, prblm_class_id, prblm_perform_id, prblm_status_id,
-    'forwarded_tickets',
-    {{ stable_hash64_number("'ticket|forwarded_tickets'") }},
-    CAST(forwarded_tickets AS DECIMAL(38,12)), CAST(NULL AS DOUBLE), current_timestamp
-FROM agg
-
-UNION ALL
-
-SELECT prblm_date, prblm_hour, catsub_id, prblm_source_id, prblm_class_id, prblm_perform_id, prblm_status_id,
-    'within_sla_tickets',
-    {{ stable_hash64_number("'ticket|within_sla_tickets'") }},
-    CAST(within_sla_tickets AS DECIMAL(38,12)), CAST(NULL AS DOUBLE), current_timestamp
-FROM agg
-
-UNION ALL
-
-SELECT prblm_date, prblm_hour, catsub_id, prblm_source_id, prblm_class_id, prblm_perform_id, prblm_status_id,
-    'resolution_hours_sum',
-    {{ stable_hash64_number("'ticket|resolution_hours_sum'") }},
-    CAST(NULL AS DECIMAL(38,12)), resolution_hours_sum, current_timestamp
-FROM agg
-
-UNION ALL
-
-SELECT prblm_date, prblm_hour, catsub_id, prblm_source_id, prblm_class_id, prblm_perform_id, prblm_status_id,
-    'resolution_hours_cnt',
-    {{ stable_hash64_number("'ticket|resolution_hours_cnt'") }},
-    CAST(resolution_hours_cnt AS DECIMAL(38,12)), CAST(NULL AS DOUBLE), current_timestamp
-FROM agg
-
-UNION ALL
-
-SELECT prblm_date, prblm_hour, catsub_id, prblm_source_id, prblm_class_id, prblm_perform_id, prblm_status_id,
-    'response_hours_sum',
-    {{ stable_hash64_number("'ticket|response_hours_sum'") }},
-    CAST(NULL AS DECIMAL(38,12)), response_hours_sum, current_timestamp
-FROM agg
-
-UNION ALL
-
-SELECT prblm_date, prblm_hour, catsub_id, prblm_source_id, prblm_class_id, prblm_perform_id, prblm_status_id,
-    'response_hours_cnt',
-    {{ stable_hash64_number("'ticket|response_hours_cnt'") }},
-    CAST(response_hours_cnt AS DECIMAL(38,12)), CAST(NULL AS DOUBLE), current_timestamp
-FROM agg
+CROSS JOIN UNNEST(
+    -- metric name array
+    ARRAY[
+        'total_tickets',
+        'resolved_tickets',
+        'one_shot_resolved',
+        'complain_tickets',
+        'forwarded_tickets',
+        'within_sla_tickets',
+        'resolution_hours_sum',
+        'resolution_hours_cnt',
+        'response_hours_sum',
+        'response_hours_cnt'
+    ],
+    -- value_decimal array  (NULL for hour/response _sum which go into value_double)
+    ARRAY[
+        CAST(total_tickets          AS DECIMAL(38,12)),
+        CAST(resolved_tickets       AS DECIMAL(38,12)),
+        CAST(one_shot_resolved      AS DECIMAL(38,12)),
+        CAST(complain_tickets       AS DECIMAL(38,12)),
+        CAST(forwarded_tickets      AS DECIMAL(38,12)),
+        CAST(within_sla_tickets     AS DECIMAL(38,12)),
+        CAST(NULL                   AS DECIMAL(38,12)),
+        CAST(resolution_hours_cnt   AS DECIMAL(38,12)),
+        CAST(NULL                   AS DECIMAL(38,12)),
+        CAST(response_hours_cnt     AS DECIMAL(38,12))
+    ],
+    -- value_double array  (non-NULL only for *_sum metrics)
+    ARRAY[
+        CAST(NULL AS DOUBLE),
+        CAST(NULL AS DOUBLE),
+        CAST(NULL AS DOUBLE),
+        CAST(NULL AS DOUBLE),
+        CAST(NULL AS DOUBLE),
+        CAST(NULL AS DOUBLE),
+        resolution_hours_sum,
+        CAST(NULL AS DOUBLE),
+        response_hours_sum,
+        CAST(NULL AS DOUBLE)
+    ]
+) AS t(field_code, value_decimal, value_double)

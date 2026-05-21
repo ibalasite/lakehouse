@@ -1,11 +1,11 @@
 {% macro generate_schema_name(custom_schema_name, node) -%}
     {#
-      mysql_cache target writes through Trino's MySQL catalog connector.
-      The target schema (lakehouse_cache) IS the MySQL database name;
-      ignoring custom_schema_name ensures every model lands in the correct
-      MySQL database regardless of its Iceberg schema override.
+      mysql_cache target: only cache models (configured schema='cache')
+      are re-routed to lakehouse_cache. All other models (gold/silver/bronze)
+      keep their original schema so that ref() resolves to iceberg.gold.*,
+      iceberg.silver.*, etc. — not mysql.lakehouse_cache.*.
     #}
-    {%- if target.name == 'mysql_cache' -%}
+    {%- if target.name == 'mysql_cache' and custom_schema_name == 'cache' -%}
         {{ target.schema | trim }}
     {%- elif custom_schema_name is not none -%}
         {{ custom_schema_name | trim }}

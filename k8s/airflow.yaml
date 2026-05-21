@@ -138,6 +138,12 @@ spec:
               value: LocalExecutor
             - name: AIRFLOW__CORE__LOAD_EXAMPLES
               value: "False"
+            # Limit to 1 concurrent task — all tasks run as forked processes in
+            # this pod; running dbt (Trino) concurrently causes OOMKill.
+            - name: AIRFLOW__CORE__PARALLELISM
+              value: "2"
+            - name: AIRFLOW__CORE__MAX_ACTIVE_TASKS_PER_DAG
+              value: "2"
             - name: TRINO_HOST
               value: trino
             - name: TRINO_PORT
@@ -211,7 +217,7 @@ spec:
             requests:
               memory: 512Mi
             limits:
-              memory: 1Gi
+              memory: 2Gi
       volumes:
         - name: dags
           configMap:
