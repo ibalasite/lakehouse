@@ -65,7 +65,7 @@ spec:
             requests:
               memory: 1Gi
             limits:
-              memory: 6Gi
+              memory: 8Gi
       volumes:
         - name: config
           configMap:
