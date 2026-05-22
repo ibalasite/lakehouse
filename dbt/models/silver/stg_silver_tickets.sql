@@ -81,13 +81,13 @@ WITH bronze_incremental AS (
     -- be at least as long as the longest acceptable pipeline downtime.
     AND ingested_at >= date_add('hour', -{{ var('bronze_lookback_hours', 6) | int }}, current_timestamp)
     {% if is_incremental() %}
-    -- Dynamic watermark via silver $snapshots: ensures we never re-process rows
-    -- already committed to silver. This subquery is NOT pushed to Iceberg (it's
-    -- a correlated scalar), but the static ingested_at filter above already prunes
-    -- bulk files so the filtered row count is small before this is evaluated.
-    AND bronze_created_at > COALESCE(
-      (SELECT MAX(committed_at)
-       FROM {{ this.database }}.{{ this.schema }}."{{ this.name }}$snapshots"),
+    -- Dynamic watermark on SOURCE ingested_at: prevents bronze-overlap duplicates.
+    -- Using ingested_at (source time) instead of bronze_created_at (processing time)
+    -- means that even when bronze re-reads rows due to its 10-minute overlap window,
+    -- silver skips them if their source ingested_at was already processed.
+    -- The -1 MINUTE buffer handles any timestamp precision edge cases.
+    AND ingested_at > COALESCE(
+      (SELECT MAX(ingested_at) - INTERVAL '1' MINUTE FROM {{ this }}),
       TIMESTAMP '2020-01-01 00:00:00 UTC'
     )
     {% else %}

@@ -344,15 +344,15 @@ Failures are logged to `/tmp/pipeline_failures.log`.
     )
 
     # ── 5. dbt test gate ──────────────────────────────────────────────────────
-    # soft_fail=True: marks as "skipped" on failure rather than blocking notify.
+    # Non-blocking: append "|| true" so DAG continues even if dbt test finds
+    # quality issues. BashOperator does not support soft_fail; using shell fallback.
     # Concurrent streaming DAG runs can exhaust Trino memory, causing false
     # positives here. Quality gate remains informational, not blocking.
     dbt_test = BashOperator(
         task_id="dbt_test",
-        bash_command=_dbt_test(),
+        bash_command=_dbt_test() + " || true",
         pool="trino_slots",
-        doc_md="Run dbt tests on gold/cache tables. Non-blocking (soft_fail=True).",
-        soft_fail=True,
+        doc_md="Run dbt tests on gold/cache tables. Non-blocking (exits 0 regardless).",
     )
 
     # ── 6. Completion notifier ────────────────────────────────────────────────

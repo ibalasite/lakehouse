@@ -62,6 +62,9 @@ spec:
             # ── Iceberg drop-with-purge (required for dbt table materializations) ─
             - name: POLARIS_FEATURE_DROP_WITH_PURGE_ENABLED
               value: "true"
+            # ── JVM heap cap: prevent OOMKill from default 50%-of-container sizing ─
+            - name: JAVA_TOOL_OPTIONS
+              value: "-Xms256m -Xmx800m -XX:MaxMetaspaceSize=256m -XX:MaxDirectMemorySize=128m"
           ports:
             - containerPort: 8181
               name: catalog
@@ -87,9 +90,9 @@ spec:
             failureThreshold: 5
           resources:
             requests:
-              memory: 256Mi
+              memory: 512Mi
             limits:
-              memory: 600Mi
+              memory: 1500Mi
 
         - name: scope-proxy
           image: python:3.11-alpine

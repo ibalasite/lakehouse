@@ -211,13 +211,13 @@ Generates ≤60 rows per cycle. Gold append-only, no full scan, no OOMKill.
     with TaskGroup(group_id="bronze_silver") as bronze_silver_group:
         dbt_bronze = BashOperator(
             task_id      = "dbt_bronze",
-            bash_command = _dbt_run("stg_bronze_tickets", {"bronze_lookback_hours": 6}),
+            bash_command = _dbt_run("stg_bronze_tickets", {"bronze_lookback_hours": 2}),
             pool         = "trino_slots",
             doc_md       = "Incremental append from raw Iceberg into bronze staging.",
         )
         dbt_silver = BashOperator(
             task_id      = "dbt_silver",
-            bash_command = _dbt_run("stg_silver_tickets", {"bronze_lookback_hours": 6}),
+            bash_command = _dbt_run("stg_silver_tickets", {"bronze_lookback_hours": 2}),
             pool         = "trino_slots",
             doc_md       = "Incremental merge (dedup + conform) into silver.",
         )
