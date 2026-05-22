@@ -472,7 +472,7 @@
     <table>
       <thead><tr><th>Layer</th><th>Component</th><th>Role</th></tr></thead>
       <tbody>
-        <tr><td>Data source</td><td><strong>Data Source POD</strong></td><td>Pure-stdlib Python HTTP server; generates 5–20 synthetic rows every 5 min; exposes <code>/api/tickets/drain</code></td></tr>
+        <tr><td>Data source</td><td><strong>Data Source POD</strong></td><td>Pure-stdlib Python HTTP server; generates 5–20 synthetic rows every 5 min; exposes <code>/api/tickets</code> (and <code>/api/tickets/drain</code>)</td></tr>
         <tr><td>Object storage</td><td><strong>MinIO</strong></td><td>S3-compatible store for Iceberg Parquet files</td></tr>
         <tr><td>Table format</td><td><strong>Apache Iceberg v2</strong></td><td>ACID table management, schema evolution, time travel</td></tr>
         <tr><td>Catalog</td><td><strong>Apache Polaris</strong></td><td>Iceberg REST catalog with OAuth2 token issuance</td></tr>
@@ -734,8 +734,9 @@ polaris-bootstrap-*           0/1     Completed   0</code></pre>
 
     <h3>Full rebuild / 完全重建</h3>
 <pre><code class="language-bash">bash init_env.sh        # optional: generate fresh credentials first
-./k8s/deploy.sh --rebuild</code></pre>
-    <p>Tear down all deployments, PVCs, and jobs, then redeploy from scratch. <strong>All Iceberg and MySQL data is lost.</strong></p>
+./k8s/deploy.sh --rebuild                   # ~90 min (includes 10M-row seed + bulk ETL)
+./k8s/deploy.sh --rebuild --skip-seed       # ~7-8 min (infrastructure only)</code></pre>
+    <p>Tear down all deployments, PVCs, and jobs, then redeploy from scratch. <strong>All Iceberg and MySQL data is lost.</strong> With <code>--skip-seed</code> the infrastructure comes up in ~7–8 minutes; the <code>lakehouse_streaming</code> DAG starts automatically and begins filling data within the first 15-minute cycle.</p>
   </section>
 
   <!-- ─── 6. Service URLs ─────────────────────────────────────────────── -->
@@ -1076,8 +1077,8 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "changeme")  # WRONG — never
 
     <h3>Key file notes</h3>
     <ul>
-      <li><strong><code>platform/data_source/app.py</code></strong> is a pure-stdlib Python HTTP server with <code>enableServiceLinks: false</code> in its pod spec to prevent k8s from injecting <code>DATA_SOURCE_PORT=tcp://...</code> which would crash <code>int()</code> parsing. The pod generates 5–20 rows every 5 minutes into a thread-safe in-memory deque; <code>GET /api/tickets/drain</code> atomically returns and clears the buffer.</li>
-      <li><strong><code>platform/init/fetch_and_ingest.py</code></strong> polls <code>/api/tickets/drain</code>, converts ISO timestamps to microsecond epoch for PyArrow, and appends to <code>iceberg.bronze.raw_tickets via pyiceberg direct write. Called every 15 minutes by <code>lakehouse_streaming</code>.</li>
+      <li><strong><code>platform/data_source/app.py</code></strong> is a pure-stdlib Python HTTP server with <code>enableServiceLinks: false</code> in its pod spec to prevent k8s from injecting <code>DATA_SOURCE_PORT=tcp://...</code> which would crash <code>int()</code> parsing. The pod generates 5–20 rows every 5 minutes into a thread-safe in-memory deque; <code>GET /api/tickets</code> (alias: <code>/api/tickets/drain</code>) atomically returns and clears the buffer.</li>
+      <li><strong><code>platform/init/fetch_and_ingest.py</code></strong> polls <code>/api/tickets/drain</code>, converts ISO timestamps to microsecond epoch for PyArrow, and appends to <code>iceberg.bronze.raw_tickets</code> via pyiceberg direct write. Called every 15 minutes by <code>lakehouse_streaming</code>.</li>
       <li><strong><code>dbt/models/gold/facts/fact_ticket_hour_long.sql</code></strong> is an append-only EAV narrow fact (one row per grain×field_code). Reads silver via <code>prblm_sysdate &gt; MAX(updated_at) - 1 minute</code> — zero full-table scan, safe for 15-min streaming.</li>
       <li><strong><code>dbt/models/gold/facts/fact_ticket_hour_wide.sql</code></strong> is an incremental PIVOT MERGE reading only delta rows from <code>hour_long</code>. 7-dimension composite unique key; trailing 24h watermark.</li>
       <li><strong><code>dbt/models/cache/cache_daily_report.sql</code></strong> is the primary Metabase source — Lambda Architecture UNION ALL (D-1 <code>fact_ticket_day_wide</code> + today SUM of <code>fact_ticket_hour_wide</code>) LEFT JOIN all dims. Runs dual-target each cycle.</li>
@@ -1098,10 +1099,10 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "changeme")  # WRONG — never
     <p>Increase the Rancher Desktop VM memory allocation to at least 8 GB (10 GB recommended) in <strong>Preferences → Virtual Machine → Memory</strong>.</p>
 
     <h3>Polaris catalog not found after restart</h3>
-    <p>Polaris uses in-memory persistence by default. After a Polaris pod restart, re-run the bootstrap job:</p>
-<pre><code class="language-bash">kubectl -n lakehouse delete job polaris-bootstrap --ignore-not-found
-kubectl -n lakehouse apply -f k8s/jobs/02-polaris-bootstrap.yaml
-kubectl -n lakehouse wait job/polaris-bootstrap --for=condition=complete --timeout=180s</code></pre>
+    <p>This stack configures Polaris with <strong>PostgreSQL JDBC persistence</strong> (<code>POLARIS_PERSISTENCE_TYPE=relational-jdbc</code>). Catalog definitions survive pod restarts — no re-bootstrap needed.</p>
+    <p>If Trino shows <code>Not authorized</code> after a Polaris restart, the cause is Polaris regenerating its RSA signing keys on startup, which invalidates Trino's cached OAuth2 token. Fix: restart Trino to force re-authentication.</p>
+<pre><code class="language-bash">kubectl -n lakehouse rollout restart deployment/trino
+kubectl -n lakehouse rollout status deployment/trino</code></pre>
 
     <h3>Trino cannot connect to MinIO</h3>
     <p>Trino uses the MinIO ClusterIP (not the hostname <code>minio</code>) to avoid Netty DNS resolution failures caused by the k3s <code>ndots:5</code> search domain. If you modify <code>configmap-trino.yaml</code>, ensure the MinIO endpoint uses the ClusterIP or the full DNS name <code>minio.lakehouse.svc.cluster.local</code>.</p>

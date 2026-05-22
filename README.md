@@ -69,7 +69,7 @@ This repository is a **self-contained local data lakehouse** that demonstrates a
 
 | Layer | Component | Role |
 |---|---|---|
-| Data source | Data Source POD | Pure-stdlib Python HTTP server; generates 5–20 synthetic ticket rows every 5 min; exposes `/api/tickets/drain` |
+| Data source | Data Source POD | Pure-stdlib Python HTTP server; generates 5–20 synthetic ticket rows every 5 min; exposes `/api/tickets` (and `/api/tickets/drain`) |
 | Object storage | MinIO | S3-compatible store for Iceberg Parquet files |
 | Table format | Apache Iceberg v2 | ACID table management, schema evolution, time travel |
 | Catalog | Apache Polaris | Iceberg REST catalog with OAuth2 token issuance |
@@ -82,7 +82,7 @@ This repository is a **self-contained local data lakehouse** that demonstrates a
 
 | 層次 | 元件 | 職責 |
 |---|---|---|
-| 資料來源 | Data Source POD | 純 stdlib Python HTTP 伺服器；每 5 分鐘產生 5–20 筆合成問題單；提供 `/api/tickets/drain` |
+| 資料來源 | Data Source POD | 純 stdlib Python HTTP 伺服器；每 5 分鐘產生 5–20 筆合成問題單；提供 `/api/tickets`（及 `/api/tickets/drain`）|
 | 物件儲存 | MinIO | 存放 Iceberg Parquet 檔案的 S3 相容存儲 |
 | 表格格式 | Apache Iceberg v2 | ACID 表格管理、結構演進、時間旅行 |
 | 目錄 | Apache Polaris | 具備 OAuth2 Token 發行的 Iceberg REST Catalog |
@@ -437,14 +437,17 @@ Internally this: regenerates `.env`, preserves the MySQL/Postgres root passwords
 
 ### Full rebuild / 完全重建
 
-Tear down all deployments, PVCs, and jobs, then redeploy from scratch with the current `.env`. All Iceberg and MySQL data is lost. Expect ~90 minutes total (seed 10M rows + bulk bronze + bulk silver + initial daily DAG run for gold/cache).
+Tear down all deployments, PVCs, and jobs, then redeploy from scratch with the current `.env`. All Iceberg and MySQL data is lost.
 
-拆除所有 Deployment、PVC 和 Job，然後以當前 `.env` 從零開始重新部署。所有 Iceberg 和 MySQL 資料將遺失。預計總時間約 90 分鐘（種子資料 + 批量銅/銀 + 初始每日 DAG 跑金/快取）。
+拆除所有 Deployment、PVC 和 Job，然後以當前 `.env` 從零開始重新部署。所有 Iceberg 和 MySQL 資料將遺失。
 
 ```bash
 bash init_env.sh        # optional: generate fresh credentials first
-./k8s/deploy.sh --rebuild
+./k8s/deploy.sh --rebuild                   # ~90 min (includes 10M-row seed + bulk ETL)
+./k8s/deploy.sh --rebuild --skip-seed       # ~7-8 min (infrastructure only; streaming DAG fills data)
 ```
+
+With `--skip-seed` the infrastructure comes up in ~7–8 minutes. The `lakehouse_streaming` DAG starts automatically and begins filling Bronze→Silver→Gold from the Data Source POD within the first 15-minute cycle.
 
 ---
 
@@ -839,7 +842,7 @@ lakehouse/
 
 **Key file notes / 關鍵檔案說明：**
 
-- `platform/data_source/app.py` is a pure-stdlib Python HTTP server with `enableServiceLinks: false` in its pod spec (prevents k8s from injecting `DATA_SOURCE_PORT=tcp://...` which would crash `int()` parsing). The pod generates 5–20 rows every 5 minutes into an in-memory deque; `GET /api/tickets/drain` atomically returns and clears the buffer.
+- `platform/data_source/app.py` is a pure-stdlib Python HTTP server with `enableServiceLinks: false` in its pod spec (prevents k8s from injecting `DATA_SOURCE_PORT=tcp://...` which would crash `int()` parsing). The pod generates 5–20 rows every 5 minutes into an in-memory deque; `GET /api/tickets` (or `/api/tickets/drain`) atomically returns and clears the buffer.
 - `platform/init/fetch_and_ingest.py` polls `/api/tickets/drain`, converts ISO timestamps to microsecond epoch for PyArrow, and appends to `iceberg.bronze.raw_tickets` via pyiceberg direct write. Called by the `lakehouse_streaming` DAG every 15 minutes.
 - `dbt/models/gold/facts/fact_ticket_hour_long.sql` is an append-only EAV narrow fact (one row per grain×field_code). It reads silver rows via `prblm_sysdate > MAX(updated_at) - 1 minute` watermark — zero full-table scan, safe for 15-min streaming cycles.
 - `dbt/models/gold/facts/fact_ticket_hour_wide.sql` is an incremental PIVOT MERGE model. It reads only delta rows from `hour_long` (watermark on `hour_long.updated_at`), pivoting 10 EAV field_codes into wide columns. 7-dimension composite unique key.
@@ -849,7 +852,7 @@ lakehouse/
 - `populate_mysql_cache.py` runs aggregation SQL on Trino and bulk-inserts into MySQL using `executemany` with 5,000-row batches. The streaming DAG calls it with `--streaming` which reads from `iceberg.gold.fact_ticket_hour_wide` for today's date (≤500 rows, ~3s) and writes to `cache_ticket_hourly`. The daily DAG calls it without flags for a full historical rebuild of `cache_ticket_hourly`.
 - `configmap-trino.yaml` is the only YAML that requires envsubst. It contains `${POLARIS_CLIENT_ID}`, `${POLARIS_CLIENT_SECRET}`, `${MINIO_ROOT_USER}`, and `${MINIO_ROOT_PASSWORD}` placeholders that `deploy.sh` substitutes from `.env` using an inline Python script before applying.
 
-- `platform/data_source/app.py` 是純 stdlib Python HTTP 伺服器，pod spec 設定 `enableServiceLinks: false`（防止 k8s 注入 `DATA_SOURCE_PORT=tcp://...` 造成 `int()` 解析崩潰）。pod 每 5 分鐘向記憶體 deque 生成 5–20 筆資料；`GET /api/tickets/drain` 原子性地返回並清除緩衝區。
+- `platform/data_source/app.py` 是純 stdlib Python HTTP 伺服器，pod spec 設定 `enableServiceLinks: false`（防止 k8s 注入 `DATA_SOURCE_PORT=tcp://...` 造成 `int()` 解析崩潰）。pod 每 5 分鐘向記憶體 deque 生成 5–20 筆資料；`GET /api/tickets`（或 `/api/tickets/drain`）原子性地返回並清除緩衝區。
 - `platform/init/fetch_and_ingest.py` 輪詢 `/api/tickets/drain`，將 ISO 時間戳轉換為 PyArrow 所需的微秒 epoch，並透過 pyiceberg 直接寫入追加至 `iceberg.bronze.raw_tickets`。由 `lakehouse_streaming` DAG 每 15 分鐘呼叫。
 - `dbt/models/gold/facts/fact_ticket_hour_long.sql` 是 append-only EAV narrow fact，透過 `prblm_sysdate > MAX(updated_at) - 1 分鐘` 水位線讀取 silver 新增資料，無全表掃描，適合 15 分鐘串流週期。
 - `dbt/models/gold/facts/fact_ticket_hour_wide.sql` 是增量 PIVOT MERGE 模型，只讀 `hour_long` 的 delta 行，將 10 個 EAV field_code 樞軸展開為寬格式欄位，7 維複合 unique_key。
@@ -876,12 +879,15 @@ Increase the Rancher Desktop VM memory allocation to at least 8 GB (10 GB recomm
 
 ### Polaris catalog not found after restart / 重啟後 Polaris Catalog 不見
 
-Polaris uses in-memory persistence by default. After a Polaris pod restart, re-run the bootstrap job / Polaris 預設使用記憶體持久化，Pod 重啟後重新執行 bootstrap job：
+This stack configures Polaris with **PostgreSQL JDBC persistence** (`POLARIS_PERSISTENCE_TYPE=relational-jdbc`). Catalog definitions (namespaces, tables) survive pod restarts and are stored in PostgreSQL — no re-bootstrap is needed after a normal Polaris pod restart.
+
+If you see `Not authorized` errors in Trino after Polaris restarts, the cause is Polaris regenerating its RSA signing keys on each startup, which invalidates Trino's cached OAuth2 token. Fix: restart Trino to force re-authentication.
+
+此堆疊使用 **PostgreSQL JDBC 持久化** Polaris，Catalog 定義存活於 Pod 重啟，無需重新執行 bootstrap。若 Polaris 重啟後 Trino 出現 `Not authorized`，是因為 Polaris 重新生成 RSA 金鑰導致 Token 失效，重啟 Trino 即可解決。
 
 ```bash
-kubectl -n lakehouse delete job polaris-bootstrap --ignore-not-found
-kubectl -n lakehouse apply -f k8s/jobs/02-polaris-bootstrap.yaml
-kubectl -n lakehouse wait job/polaris-bootstrap --for=condition=complete --timeout=180s
+kubectl -n lakehouse rollout restart deployment/trino
+kubectl -n lakehouse rollout status deployment/trino
 ```
 
 ### Trino cannot connect to MinIO / Trino 無法連接 MinIO
