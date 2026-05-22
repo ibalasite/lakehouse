@@ -1,8 +1,7 @@
 {{
   config(
     materialized        = 'incremental',
-    incremental_strategy= 'merge',
-    unique_key          = 'prblm_code',
+    incremental_strategy= 'append',
     on_schema_change    = 'append_new_columns',
     schema              = 'silver'
   )
@@ -74,12 +73,13 @@ WITH bronze_incremental AS (
   WHERE
     bronze_created_at IS NOT NULL
     {% if is_incremental() %}
-    AND bronze_created_at >= (
-      SELECT COALESCE(
-        MAX(updated_at) - INTERVAL '10' MINUTE,
-        TIMESTAMP '2020-01-01 00:00:00'
-      )
-      FROM {{ this }}
+    -- Watermark via Iceberg snapshot metadata: reads only the $snapshots system
+    -- table (one row per commit), never the actual data rows. Avoids the full
+    -- 10M-row scan of stg_silver_tickets that caused OOMKill with MAX(updated_at).
+    AND bronze_created_at > COALESCE(
+      (SELECT MAX(committed_at)
+       FROM {{ this.database }}.{{ this.schema }}."{{ this.name }}$snapshots"),
+      TIMESTAMP '2020-01-01 00:00:00 UTC'
     )
     {% else %}
     -- Full-refresh: limit to last 60 days by ticket business date to stay within
