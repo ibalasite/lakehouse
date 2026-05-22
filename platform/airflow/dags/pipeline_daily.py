@@ -243,7 +243,7 @@ Failures are logged to `/tmp/pipeline_failures.log`.
 
         dbt_bronze = BashOperator(
             task_id="dbt_bronze",
-            bash_command=_dbt_run("stg_bronze_tickets"),
+            bash_command=_dbt_run("stg_bronze_tickets", {"bronze_lookback_hours": 48}),
             pool="trino_slots",
             doc_md="Incremental append from raw Iceberg layer into bronze staging.",
         )

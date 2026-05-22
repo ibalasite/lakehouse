@@ -31,17 +31,24 @@
 WITH source AS (
   SELECT *
   FROM {{ source('bronze', 'raw_tickets') }}
-  {% if is_incremental() %}
-  -- Load only rows newer than the latest watermark already in bronze.
-  -- A 10-minute overlap buffer guards against late HTTP data-source delivery.
-  WHERE ingested_at > (
-    SELECT COALESCE(
-      MAX(ingested_at) - INTERVAL '10' MINUTE,
-      TIMESTAMP '2020-01-01 00:00:00'
+  WHERE
+    -- Static window: Trino pushes this to Iceberg file-level min/max stats,
+    -- pruning bulk files so only recent files are read. The subquery watermark
+    -- below is NOT pushed to Iceberg (it's a correlated scalar), so this
+    -- static guard is essential for preventing full 711MB raw_tickets scan.
+    ingested_at >= date_add('hour', -{{ var('bronze_lookback_hours', 6) | int }}, current_timestamp)
+    {% if is_incremental() %}
+    -- Dynamic watermark: skip rows already in bronze. Combined with the static
+    -- window above, only files within the window AND newer than the watermark
+    -- are actually read row-by-row.
+    AND ingested_at > (
+      SELECT COALESCE(
+        MAX(ingested_at) - INTERVAL '10' MINUTE,
+        TIMESTAMP '2020-01-01 00:00:00'
+      )
+      FROM {{ this }}
     )
-    FROM {{ this }}
-  )
-  {% endif %}
+    {% endif %}
 ),
 
 -- Compute raw hour deltas once so they can be reused in both the metric
