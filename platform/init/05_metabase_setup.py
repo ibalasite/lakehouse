@@ -206,9 +206,11 @@ def wait_for_sync(client: MetabaseClient, db_id: int, timeout: int = 120) -> Non
     log.warning("Database sync did not complete within %ds — continuing anyway.", timeout)
 
 
-def add_trino_database(client: MetabaseClient) -> int:
+def add_trino_database(client: MetabaseClient, retries: int = 5, delay: int = 15) -> int:
     """Add Metabase → Trino connection using the built-in Presto driver.
-    Returns db_id on success, -1 if the driver is unavailable or the call fails."""
+    Returns db_id on success, -1 if the driver is unavailable or the call fails.
+    Retries up to `retries` times with `delay` seconds between attempts — Trino
+    may still be initializing catalogs when the setup job first runs."""
     r = client.get("/database")
     if r.ok:
         for db in r.json().get("data", r.json() if isinstance(r.json(), list) else []):
@@ -216,7 +218,6 @@ def add_trino_database(client: MetabaseClient) -> int:
                 log.info("Trino database already exists with id=%d.", db["id"])
                 return db["id"]
 
-    log.info("Adding Trino database connection (presto-jdbc driver) …")
     payload = {
         "engine": "presto-jdbc",
         "name": "Lakehouse Gold (Trino)",
@@ -224,7 +225,7 @@ def add_trino_database(client: MetabaseClient) -> int:
             "host": TRINO_HOST,
             "port": TRINO_PORT,
             "catalog": "iceberg",
-            "user": "trino",
+            "user": "admin",
             "ssl": False,
             "tunnel-enabled": False,
         },
@@ -232,16 +233,22 @@ def add_trino_database(client: MetabaseClient) -> int:
         "is_on_demand": False,
         "is_full_sync": True,
     }
-    r = client.post("/database", payload)
-    if not r.ok:
+    for attempt in range(1, retries + 1):
+        log.info("Adding Trino database connection (attempt %d/%d) …", attempt, retries)
+        r = client.post("/database", payload)
+        if r.ok:
+            db_id = r.json()["id"]
+            log.info("Trino database added with id=%d.", db_id)
+            return db_id
         log.warning(
-            "Trino database add failed (HTTP %s): %s — skipping Trino section.",
+            "Trino database add failed (HTTP %s): %s",
             r.status_code, r.text[:200],
         )
-        return -1
-    db_id = r.json()["id"]
-    log.info("Trino database added with id=%d.", db_id)
-    return db_id
+        if attempt < retries:
+            log.info("Waiting %ds before retry …", delay)
+            time.sleep(delay)
+    log.warning("Trino database add failed after %d attempts — skipping Trino section.", retries)
+    return -1
 
 
 def get_table_id(client: MetabaseClient, db_id: int, table_name: str) -> int | None:
