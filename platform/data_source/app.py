@@ -161,7 +161,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
                 n = len(_buffer)
             self._json(200, {"status": "ok", "buffered_rows": n})
 
-        elif self.path == "/api/tickets/drain":
+        elif self.path in ("/api/tickets/drain", "/api/tickets"):
             with _lock:
                 rows = list(_buffer)
                 _buffer.clear()
