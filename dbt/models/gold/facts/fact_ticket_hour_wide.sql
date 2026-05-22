@@ -26,13 +26,16 @@ WITH src AS (
   SELECT *
   FROM {{ ref('fact_ticket_hour_long') }}
   {% if is_incremental() %}
-  WHERE updated_at > (
-    SELECT COALESCE(
-      MAX(updated_at),
-      TIMESTAMP '1900-01-01 00:00:00.000000 UTC'
+  WHERE
+    -- Static window: prunes hour_long Iceberg files before the subquery watermark.
+    updated_at >= date_add('hour', -{{ var('bronze_lookback_hours', 6) | int }}, current_timestamp)
+    AND updated_at > (
+      SELECT COALESCE(
+        MAX(updated_at),
+        TIMESTAMP '1900-01-01 00:00:00.000000 UTC'
+      )
+      FROM {{ this }}
     )
-    FROM {{ this }}
-  )
   {% endif %}
 )
 

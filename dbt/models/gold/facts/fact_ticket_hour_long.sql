@@ -40,13 +40,19 @@ WITH new_silver AS (
     response_hours
   FROM {{ ref('stg_silver_tickets') }}
   {% if is_incremental() %}
-  WHERE prblm_sysdate > (
-    SELECT COALESCE(
-      MAX(updated_at) - INTERVAL '1' MINUTE,
-      TIMESTAMP '1900-01-01 00:00:00.000000 UTC'
+  WHERE
+    -- Static window: Trino pushes this to Iceberg file-level min/max stats on updated_at,
+    -- pruning bulk silver files so only recent files are read. The subquery watermark
+    -- below is NOT pushed to Iceberg (correlated scalar), so this guard is essential
+    -- for preventing full silver table scan on 10M-row tables.
+    updated_at >= date_add('hour', -{{ var('bronze_lookback_hours', 6) | int }}, current_timestamp)
+    AND prblm_sysdate > (
+      SELECT COALESCE(
+        MAX(updated_at) - INTERVAL '1' MINUTE,
+        TIMESTAMP '1900-01-01 00:00:00.000000 UTC'
+      )
+      FROM {{ this }}
     )
-    FROM {{ this }}
-  )
   {% else %}
   -- Full-refresh initial load: limit to last 30 days.
   -- 90-day initial load OOMs on 10GB dev node (4M rows too large for CTAS).
