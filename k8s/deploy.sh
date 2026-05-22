@@ -98,6 +98,10 @@ if [[ "${REBUILD}" == "true" ]]; then
     ${KC} delete configmaps  --all --ignore-not-found
     log "  Waiting for pods to terminate (up to 120s)..."
     ${KC} wait pods --all --for=delete --timeout=120s 2>/dev/null || true
+    log "  Cleaning up Released PVs (blocks new provisioning if left over)..."
+    kubectl --context="${CONTEXT}" get pv --no-headers 2>/dev/null \
+        | awk '$5=="Released"{print $1}' \
+        | xargs -r kubectl --context="${CONTEXT}" delete pv --ignore-not-found 2>/dev/null || true
     success "Resources deleted — continuing with fresh deploy"
 fi
 
@@ -254,7 +258,7 @@ kubectl --context="${CONTEXT}" apply -f "${SCRIPT_DIR}/postgres.yaml"
 # ── 7. Wait for core services ──────────────────────────────────────────────────
 step "Waiting for core services to become ready"
 
-wait_ready minio     120
+wait_ready minio     300
 wait_ready mysql     180
 wait_ready postgres   90
 
