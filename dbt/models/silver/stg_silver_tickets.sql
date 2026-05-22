@@ -33,6 +33,10 @@
 --   resolution_bucket  → macros/platform/resolution_bucket.sql
 --   response_bucket    → macros/platform/response_bucket.sql
 
+-- bronze_lookback_hours: static Iceberg predicate that lets the file-level
+-- min/max stats on ingested_at prune bulk files before the watermark subquery
+-- is evaluated. Default is 6h (enough for streaming retries); daily DAG passes
+-- 48 via --vars '{"bronze_lookback_hours": 48}' to catch full-day backfills.
 WITH bronze_incremental AS (
   SELECT
     -- Enumerate all columns explicitly to make the schema contract visible
@@ -72,19 +76,24 @@ WITH bronze_incremental AS (
   FROM {{ ref('stg_bronze_tickets') }}
   WHERE
     bronze_created_at IS NOT NULL
+    -- Static window: Trino pushes this to Iceberg file-level min/max stats on
+    -- ingested_at, pruning old bulk files without reading them. The window must
+    -- be at least as long as the longest acceptable pipeline downtime.
+    AND ingested_at >= date_add('hour', -{{ var('bronze_lookback_hours', 6) | int }}, current_timestamp)
     {% if is_incremental() %}
-    -- Watermark via Iceberg snapshot metadata: reads only the $snapshots system
-    -- table (one row per commit), never the actual data rows. Avoids the full
-    -- 10M-row scan of stg_silver_tickets that caused OOMKill with MAX(updated_at).
+    -- Dynamic watermark via silver $snapshots: ensures we never re-process rows
+    -- already committed to silver. This subquery is NOT pushed to Iceberg (it's
+    -- a correlated scalar), but the static ingested_at filter above already prunes
+    -- bulk files so the filtered row count is small before this is evaluated.
     AND bronze_created_at > COALESCE(
       (SELECT MAX(committed_at)
        FROM {{ this.database }}.{{ this.schema }}."{{ this.name }}$snapshots"),
       TIMESTAMP '2020-01-01 00:00:00 UTC'
     )
     {% else %}
-    -- Full-refresh: limit to last 60 days by ticket business date to stay within
-    -- memory constraints. Older history is preserved via incremental runs.
-    AND prblm_sysdate >= CURRENT_TIMESTAMP - INTERVAL '60' DAY
+    -- Full-refresh path: ingested_at window above already limits the scan.
+    -- No additional filter needed.
+    AND 1=1
     {% endif %}
 ),
 

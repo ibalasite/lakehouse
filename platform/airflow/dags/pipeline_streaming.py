@@ -57,18 +57,23 @@ _ALLOWED_SELECTORS: frozenset[str] = frozenset([
 _ALLOWED_CACHE_SELECTORS: frozenset[str] = frozenset(["cache_daily_report"])
 
 
-def _dbt_run(select: str) -> str:
+def _dbt_run(select: str, extra_vars: dict | None = None) -> str:
     if select not in _ALLOWED_SELECTORS:
         raise ValueError(
             f"dbt selector {select!r} not in allowed list. "
             "Register it in _ALLOWED_SELECTORS first."
         )
+    import json
     import shlex
     safe_select = shlex.quote(select)
+    vars_flag = (
+        f"--vars {shlex.quote(json.dumps(extra_vars))} " if extra_vars else ""
+    )
     return (
         f"cd {shlex.quote(DBT_DIR)} && "
         f"PATH=/pip-packages/bin:$PATH "
         f"dbt run --select {safe_select} "
+        f"{vars_flag}"
         f"--profiles-dir {shlex.quote(DBT_PROFILES_DIR)} "
         f"--target {shlex.quote(DBT_TARGET)}"
     )
@@ -207,11 +212,13 @@ Generates ≤60 rows per cycle. Gold append-only, no full scan, no OOMKill.
         dbt_bronze = BashOperator(
             task_id      = "dbt_bronze",
             bash_command = _dbt_run("stg_bronze_tickets"),
+            pool         = "trino_slots",
             doc_md       = "Incremental append from raw Iceberg into bronze staging.",
         )
         dbt_silver = BashOperator(
             task_id      = "dbt_silver",
-            bash_command = _dbt_run("stg_silver_tickets"),
+            bash_command = _dbt_run("stg_silver_tickets", {"bronze_lookback_hours": 6}),
+            pool         = "trino_slots",
             doc_md       = "Incremental merge (dedup + conform) into silver.",
         )
         dbt_bronze >> dbt_silver
@@ -221,6 +228,7 @@ Generates ≤60 rows per cycle. Gold append-only, no full scan, no OOMKill.
         dbt_hour_long = BashOperator(
             task_id      = "dbt_hour_long",
             bash_command = _dbt_run("fact_ticket_hour_long"),
+            pool         = "trino_slots",
             doc_md       = (
                 "Append-only EAV narrow fact. Only processes silver rows newer than "
                 "MAX(hour_long.updated_at) - 1 min. Zero full-table scan."
@@ -229,6 +237,7 @@ Generates ≤60 rows per cycle. Gold append-only, no full scan, no OOMKill.
         dbt_hour_wide = BashOperator(
             task_id      = "dbt_hour_wide",
             bash_command = _dbt_run("fact_ticket_hour_wide"),
+            pool         = "trino_slots",
             doc_md       = "PIVOT MERGE from hour_long delta rows → hourly serving fact.",
         )
         dbt_hour_long >> dbt_hour_wide
@@ -237,6 +246,7 @@ Generates ≤60 rows per cycle. Gold append-only, no full scan, no OOMKill.
     dbt_cache_report_iceberg = BashOperator(
         task_id      = "dbt_cache_report_iceberg",
         bash_command = _dbt_run("cache_daily_report"),
+        pool         = "trino_slots",
         doc_md       = (
             "Lambda Architecture UNION ALL (D-1 day_wide + today hour_wide, LEFT JOIN dims) "
             "into iceberg.cache.cache_daily_report. Iceberg is source of truth."
@@ -246,6 +256,7 @@ Generates ≤60 rows per cycle. Gold append-only, no full scan, no OOMKill.
     dbt_cache_report_mysql = BashOperator(
         task_id      = "dbt_cache_report_mysql",
         bash_command = _dbt_run_mysql("cache_daily_report"),
+        pool         = "trino_slots",
         doc_md       = (
             "Mirror cache_daily_report into mysql.lakehouse_cache via Trino MySQL connector. "
             "Primary table read by Metabase dashboards."

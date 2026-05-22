@@ -65,19 +65,24 @@ _ALLOWED_CACHE_SELECTORS: frozenset[str] = frozenset(
 )
 
 
-def _dbt_run(select: str) -> str:
+def _dbt_run(select: str, extra_vars: dict | None = None) -> str:
     """Return a safe dbt run bash command for *select* against the prod Iceberg target."""
     if select not in _ALLOWED_SELECTORS:
         raise ValueError(
             f"dbt selector {select!r} is not in the allowed list. "
             f"Register it in _ALLOWED_SELECTORS first."
         )
+    import json
     import shlex
     safe_select = shlex.quote(select)
+    vars_flag = (
+        f"--vars {shlex.quote(json.dumps(extra_vars))} " if extra_vars else ""
+    )
     return (
         f"cd {shlex.quote(DBT_DIR)} && "
         f"PATH=/pip-packages/bin:$PATH "
         f"dbt run --select {safe_select} "
+        f"{vars_flag}"
         f"--profiles-dir {shlex.quote(DBT_PROFILES_DIR)} "
         f"--target {shlex.quote(DBT_TARGET)}"
     )
@@ -239,12 +244,14 @@ Failures are logged to `/tmp/pipeline_failures.log`.
         dbt_bronze = BashOperator(
             task_id="dbt_bronze",
             bash_command=_dbt_run("stg_bronze_tickets"),
+            pool="trino_slots",
             doc_md="Incremental append from raw Iceberg layer into bronze staging.",
         )
 
         dbt_silver = BashOperator(
             task_id="dbt_silver",
-            bash_command=_dbt_run("stg_silver_tickets"),
+            bash_command=_dbt_run("stg_silver_tickets", {"bronze_lookback_hours": 48}),
+            pool="trino_slots",
             doc_md="Incremental merge (dedup + conform) from bronze into silver.",
         )
 
@@ -256,12 +263,14 @@ Failures are logged to `/tmp/pipeline_failures.log`.
         dbt_gold_dims = BashOperator(
             task_id="dbt_gold_dims",
             bash_command=_dbt_run("gold.dims.*"),
+            pool="trino_slots",
             doc_md="Rebuild all gold dimension tables (full table materialisation).",
         )
 
         dbt_gold_hour_long = BashOperator(
             task_id="dbt_gold_hour_long",
             bash_command=_dbt_run("fact_ticket_hour_long"),
+            pool="trino_slots",
             doc_md=(
                 "Canonical EAV narrow fact, append-only. "
                 "Reads only silver rows newer than MAX(hour_long.updated_at) - 1 min."
@@ -271,18 +280,21 @@ Failures are logged to `/tmp/pipeline_failures.log`.
         dbt_gold_hour_wide = BashOperator(
             task_id="dbt_gold_hour_wide",
             bash_command=_dbt_run("fact_ticket_hour_wide"),
+            pool="trino_slots",
             doc_md="PIVOT MERGE from hour_long delta rows → hourly serving fact.",
         )
 
         dbt_gold_day_wide = BashOperator(
             task_id="dbt_gold_day_wide",
             bash_command=_dbt_run("fact_ticket_day_wide"),
+            pool="trino_slots",
             doc_md="Daily aggregate MERGE from hour_wide, 7-day lookback.",
         )
 
         dbt_gold_month_wide = BashOperator(
             task_id="dbt_gold_month_wide",
             bash_command=_dbt_run("fact_ticket_month_wide"),
+            pool="trino_slots",
             doc_md="Monthly aggregate MERGE from day_wide, 2-month lookback.",
         )
 
@@ -297,12 +309,14 @@ Failures are logged to `/tmp/pipeline_failures.log`.
     dbt_cache_iceberg = BashOperator(
         task_id="dbt_cache_iceberg",
         bash_command=_dbt_run("cache_ticket_daily"),
+        pool="trino_slots",
         doc_md="Write 730-day daily cache (pre-joined dims) into iceberg.cache.cache_ticket_daily.",
     )
 
     dbt_cache_mysql = BashOperator(
         task_id="dbt_cache_mysql",
         bash_command=_dbt_run_mysql("cache_ticket_daily"),
+        pool="trino_slots",
         doc_md=(
             "Mirror cache_ticket_daily into mysql.lakehouse_cache via Trino MySQL connector. "
             "Runs after Iceberg write; MySQL failure does not block Iceberg source of truth."
@@ -312,6 +326,7 @@ Failures are logged to `/tmp/pipeline_failures.log`.
     dbt_cache_report_iceberg = BashOperator(
         task_id="dbt_cache_report_iceberg",
         bash_command=_dbt_run("cache_daily_report"),
+        pool="trino_slots",
         doc_md=(
             "Lambda Architecture UNION ALL (D-1 day_wide + today hour_wide, LEFT JOIN dims) "
             "into iceberg.cache.cache_daily_report."
@@ -321,6 +336,7 @@ Failures are logged to `/tmp/pipeline_failures.log`.
     dbt_cache_report_mysql = BashOperator(
         task_id="dbt_cache_report_mysql",
         bash_command=_dbt_run_mysql("cache_daily_report"),
+        pool="trino_slots",
         doc_md=(
             "Mirror cache_daily_report into mysql.lakehouse_cache via Trino MySQL connector. "
             "Primary table read by Metabase dashboards."
@@ -334,6 +350,7 @@ Failures are logged to `/tmp/pipeline_failures.log`.
     dbt_test = BashOperator(
         task_id="dbt_test",
         bash_command=_dbt_test(),
+        pool="trino_slots",
         doc_md="Run dbt tests on gold/cache tables. Non-blocking (soft_fail=True).",
         soft_fail=True,
     )
