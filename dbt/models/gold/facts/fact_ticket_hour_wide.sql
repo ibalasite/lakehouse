@@ -42,6 +42,7 @@ WITH src AS (
 SELECT
   -- ── Dimension keys ──────────────────────────────────────────────────────────
   prblm_date,
+  month_sk,
   prblm_hour,
   catsub_id,
   prblm_source_id,
@@ -49,19 +50,19 @@ SELECT
   prblm_perform_id,
   prblm_status_id,
 
-  -- ── Volume metrics (PIVOT by field_code) ────────────────────────────────────
-  SUM(CASE WHEN field_code = 'total_tickets'    THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS total_tickets,
-  SUM(CASE WHEN field_code = 'resolved_tickets' THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS resolved_tickets,
-  SUM(CASE WHEN field_code = 'one_shot_resolved' THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS one_shot_resolved,
-  SUM(CASE WHEN field_code = 'complain_tickets'  THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS complain_tickets,
-  SUM(CASE WHEN field_code = 'forwarded_tickets' THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS forwarded_tickets,
-  SUM(CASE WHEN field_code = 'within_sla_tickets' THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS within_sla_tickets,
+  -- ── Volume metrics (PIVOT by field_sk per EDD §9.1 — no VARCHAR field_code) ─
+  SUM(CASE WHEN field_sk = {{ stable_hash64_number("'ticket|total_tickets'") }}     THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS total_tickets,
+  SUM(CASE WHEN field_sk = {{ stable_hash64_number("'ticket|resolved_tickets'") }}  THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS resolved_tickets,
+  SUM(CASE WHEN field_sk = {{ stable_hash64_number("'ticket|one_shot_resolved'") }} THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS one_shot_resolved,
+  SUM(CASE WHEN field_sk = {{ stable_hash64_number("'ticket|complain_tickets'") }}  THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS complain_tickets,
+  SUM(CASE WHEN field_sk = {{ stable_hash64_number("'ticket|forwarded_tickets'") }} THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS forwarded_tickets,
+  SUM(CASE WHEN field_sk = {{ stable_hash64_number("'ticket|within_sla_tickets'") }} THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS within_sla_tickets,
 
   -- ── Duration components (sum + cnt for correct weighted avg at day level) ───
-  SUM(CASE WHEN field_code = 'resolution_hours_sum' THEN value_double  ELSE CAST(0 AS DOUBLE) END) AS sum_resolution_hours,
-  SUM(CASE WHEN field_code = 'resolution_hours_cnt' THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS cnt_resolution_hours,
-  SUM(CASE WHEN field_code = 'response_hours_sum'   THEN value_double  ELSE CAST(0 AS DOUBLE) END) AS sum_response_hours,
-  SUM(CASE WHEN field_code = 'response_hours_cnt'   THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS cnt_response_hours,
+  SUM(CASE WHEN field_sk = {{ stable_hash64_number("'ticket|resolution_hours_sum'") }} THEN value_double  ELSE CAST(0 AS DOUBLE) END) AS sum_resolution_hours,
+  SUM(CASE WHEN field_sk = {{ stable_hash64_number("'ticket|resolution_hours_cnt'") }} THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS cnt_resolution_hours,
+  SUM(CASE WHEN field_sk = {{ stable_hash64_number("'ticket|response_hours_sum'") }}   THEN value_double  ELSE CAST(0 AS DOUBLE) END) AS sum_response_hours,
+  SUM(CASE WHEN field_sk = {{ stable_hash64_number("'ticket|response_hours_cnt'") }}   THEN value_decimal ELSE CAST(0 AS DECIMAL(38,12)) END) AS cnt_response_hours,
 
   -- ── Pipeline metadata ────────────────────────────────────────────────────────
   MAX(updated_at) AS updated_at
@@ -69,6 +70,7 @@ SELECT
 FROM src
 GROUP BY
   prblm_date,
+  month_sk,
   prblm_hour,
   catsub_id,
   prblm_source_id,

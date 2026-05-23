@@ -12,7 +12,7 @@
   ──────────────────────────────────────────────────────────────────────────────
   Gold canonical fact: EAV narrow format, append-only.
 
-  One row per (prblm_date, prblm_hour, dimension_combo, field_code).
+  One row per (prblm_date, prblm_hour, dimension_combo, field_sk).
   Each 15-min run appends only NEW silver rows (prblm_sysdate watermark).
 
   CROSS JOIN UNNEST replaces the original 10 UNION ALL pattern to avoid
@@ -89,35 +89,37 @@ agg AS (
 -- CROSS JOIN UNNEST: single scan of agg → 10 EAV rows per group.
 -- Eliminates the original 10 UNION ALL pattern that caused Trino to
 -- re-execute the GROUP BY 10 times and OOMKill on large silver tables.
+-- field_code VARCHAR is omitted per EDD §9.1 (VARCHAR prohibited in fact tables).
+-- field_sk pre-computed as stable_hash64_number('ticket|<metric>') per EDD §9.4.
 SELECT
     prblm_date,
+    CAST(YEAR(prblm_date)*100+MONTH(prblm_date) AS BIGINT)    AS month_sk,
     prblm_hour,
     catsub_id,
     prblm_source_id,
     prblm_class_id,
     prblm_perform_id,
     prblm_status_id,
-    field_code,
-    {{ stable_hash64_number("'ticket|' || field_code") }} AS field_sk,
+    field_sk,
     value_decimal,
     value_double,
     current_timestamp AS updated_at
 FROM agg
 CROSS JOIN UNNEST(
-    -- metric name array
+    -- field_sk array: stable non-negative INT64 hash per EDD §9.4; no VARCHAR field_code
     ARRAY[
-        'total_tickets',
-        'resolved_tickets',
-        'one_shot_resolved',
-        'complain_tickets',
-        'forwarded_tickets',
-        'within_sla_tickets',
-        'resolution_hours_sum',
-        'resolution_hours_cnt',
-        'response_hours_sum',
-        'response_hours_cnt'
+        {{ stable_hash64_number("'ticket|total_tickets'") }},
+        {{ stable_hash64_number("'ticket|resolved_tickets'") }},
+        {{ stable_hash64_number("'ticket|one_shot_resolved'") }},
+        {{ stable_hash64_number("'ticket|complain_tickets'") }},
+        {{ stable_hash64_number("'ticket|forwarded_tickets'") }},
+        {{ stable_hash64_number("'ticket|within_sla_tickets'") }},
+        {{ stable_hash64_number("'ticket|resolution_hours_sum'") }},
+        {{ stable_hash64_number("'ticket|resolution_hours_cnt'") }},
+        {{ stable_hash64_number("'ticket|response_hours_sum'") }},
+        {{ stable_hash64_number("'ticket|response_hours_cnt'") }}
     ],
-    -- value_decimal array  (NULL for hour/response _sum which go into value_double)
+    -- value_decimal array  (NULL for *_sum metrics which go into value_double)
     ARRAY[
         CAST(total_tickets          AS DECIMAL(38,12)),
         CAST(resolved_tickets       AS DECIMAL(38,12)),
@@ -143,4 +145,4 @@ CROSS JOIN UNNEST(
         response_hours_sum,
         CAST(NULL AS DOUBLE)
     ]
-) AS t(field_code, value_decimal, value_double)
+) AS t(field_sk, value_decimal, value_double)

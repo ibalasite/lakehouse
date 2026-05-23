@@ -150,9 +150,18 @@ transformed AS (
       ELSE 0
     END                                                       AS within_sla,
 
-    -- ── Pipeline metadata ────────────────────────────────────────────────────
+    -- ── Pipeline metadata (EDD §8.2) ─────────────────────────────────────────
     ingested_at,
-    current_timestamp                                         AS bronze_created_at
+    current_timestamp                                         AS bronze_created_at,
+    -- EDD §8.2 mandatory audit columns
+    CAST(ingested_at AT TIME ZONE 'Asia/Taipei' AS DATE)      AS _ingested_date,
+    CAST('data_source_pod' AS VARCHAR)                        AS _source_system,
+    CAST('raw_tickets' AS VARCHAR)                            AS _source_table,
+    CAST('/api/tickets' AS VARCHAR)                           AS _source_file_path,
+    CAST('r' AS VARCHAR)                                      AS _cdc_op,
+    ingested_at                                               AS _cdc_ts,
+    CAST('{{ invocation_id }}' AS VARCHAR)                    AS _batch_id,
+    {{ stable_hash64_number("prblm_code || '|' || cast(coalesce(prblm_updateddate, TIMESTAMP '1900-01-01 00:00:00 UTC') as varchar)") }} AS _record_hash
 
   FROM with_durations
 )

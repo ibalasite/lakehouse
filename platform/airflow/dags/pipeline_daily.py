@@ -152,6 +152,79 @@ def on_failure_callback(context: dict) -> None:
         log.error("Could not write failure log: %s", exc)
 
 
+# ── MySQL partition rotation (EDD §10.6.5) ────────────────────────────────────
+def rotate_mysql_partitions(**context) -> None:
+    """Drop daily partitions older than 760 days; add tomorrow's partition.
+
+    EDD §10.6.5: rolling window = 730 active days + 30 buffer = 760 total.
+    Runs every night after both MySQL cache tasks complete.
+    Credentials sourced exclusively from environment variables — no literals.
+    """
+    import os
+    from datetime import date, timedelta
+
+    import mysql.connector  # mysql-connector-python must be installed in Airflow image
+
+    host = os.environ.get("MYSQL_HOST", "mysql")
+    port = int(os.environ.get("MYSQL_PORT", "3306"))
+    user = os.environ.get("MYSQL_USER", "root")
+    password = os.environ["MYSQL_ROOT_PASSWORD"]
+
+    conn = mysql.connector.connect(
+        host=host, port=port, user=user, password=password,
+        database="lakehouse_cache",
+        connection_timeout=30,
+    )
+    cur = conn.cursor()
+    today = date.today()
+    # Keep 730 active days + 30 buffer = 760 total daily partitions.
+    # A partition named p2024_05_24 covers data for 2024-05-24.
+    # Drop any partition whose date is older than today - 760 days.
+    cutoff = today - timedelta(days=760)
+
+    tables = ("cache_ticket_daily", "cache_ticket_hourly")
+    for table in tables:
+        cur.execute(
+            """
+            SELECT PARTITION_NAME FROM information_schema.PARTITIONS
+            WHERE TABLE_SCHEMA = 'lakehouse_cache'
+              AND TABLE_NAME = %s
+              AND PARTITION_NAME != 'p_future'
+            ORDER BY PARTITION_DESCRIPTION
+            """,
+            (table,),
+        )
+        for (part_name,) in cur.fetchall():
+            try:
+                # Parse pYYYY_MM_DD → date object
+                tokens = part_name[1:].split("_")  # strip leading 'p'
+                part_date = date(int(tokens[0]), int(tokens[1]), int(tokens[2]))
+            except (ValueError, IndexError):
+                continue
+            if part_date < cutoff:
+                cur.execute(f"ALTER TABLE {table} DROP PARTITION `{part_name}`")
+                log.info("Rotated out expired partition %s.%s (date=%s)", table, part_name, part_date)
+
+        # Reorganise p_future: carve out tomorrow's daily partition.
+        tomorrow = today + timedelta(days=1)
+        new_part = tomorrow.strftime("p%Y_%m_%d")
+        boundary = (tomorrow + timedelta(days=1)).strftime("%Y-%m-%d")
+        cur.execute(
+            f"""
+            ALTER TABLE lakehouse_cache.{table}
+            REORGANIZE PARTITION p_future INTO (
+                PARTITION {new_part} VALUES LESS THAN (TO_DAYS('{boundary}')),
+                PARTITION p_future VALUES LESS THAN MAXVALUE
+            )
+            """
+        )
+        log.info("Added partition %s.%s (boundary %s)", table, new_part, boundary)
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+
 # ── Completion notifier ────────────────────────────────────────────────────────
 def notify_complete(**context) -> None:
     """Log pipeline completion stats to stdout (visible in Airflow task logs).
@@ -343,7 +416,18 @@ Failures are logged to `/tmp/pipeline_failures.log`.
         ),
     )
 
-    # ── 5. dbt test gate ──────────────────────────────────────────────────────
+    # ── 5. MySQL partition rotation (EDD §10.6.5) ────────────────────────────
+    mysql_rotate_partitions = PythonOperator(
+        task_id="mysql_rotate_partitions",
+        python_callable=rotate_mysql_partitions,
+        doc_md=(
+            "Drop MySQL partitions older than 760 days (730 active + 30 buffer). "
+            "Add tomorrow's daily partition by reorganising p_future. "
+            "Runs after both MySQL cache tasks complete — not in trino_slots pool."
+        ),
+    )
+
+    # ── 6. dbt test gate ──────────────────────────────────────────────────────
     # Non-blocking: append "|| true" so DAG continues even if dbt test finds
     # quality issues. BashOperator does not support soft_fail; using shell fallback.
     # Concurrent streaming DAG runs can exhaust Trino memory, causing false
@@ -355,7 +439,7 @@ Failures are logged to `/tmp/pipeline_failures.log`.
         doc_md="Run dbt tests on gold/cache tables. Non-blocking (exits 0 regardless).",
     )
 
-    # ── 6. Completion notifier ────────────────────────────────────────────────
+    # ── 7. Completion notifier ────────────────────────────────────────────────
     notify = PythonOperator(
         task_id="notify_complete",
         python_callable=notify_complete,
@@ -364,11 +448,11 @@ Failures are logged to `/tmp/pipeline_failures.log`.
 
     # ── Task ordering ─────────────────────────────────────────────────────────
     # Cache runs as two independent Iceberg→MySQL chains after gold completes.
-    # Iceberg is source of truth; MySQL mirrors follow. Both chains must finish
-    # before the dbt test gate.
+    # Iceberg is source of truth; MySQL mirrors follow. After both MySQL tasks
+    # complete, rotate MySQL partitions, then run the dbt test gate.
     check_source_data >> bronze_silver_group >> gold_group
 
-    gold_group >> dbt_cache_iceberg >> dbt_cache_mysql >> dbt_test
-    gold_group >> dbt_cache_report_iceberg >> dbt_cache_report_mysql >> dbt_test
+    gold_group >> dbt_cache_iceberg >> dbt_cache_mysql
+    gold_group >> dbt_cache_report_iceberg >> dbt_cache_report_mysql
 
-    dbt_test >> notify
+    [dbt_cache_mysql, dbt_cache_report_mysql] >> mysql_rotate_partitions >> dbt_test >> notify
