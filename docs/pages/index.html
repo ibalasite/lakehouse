@@ -522,7 +522,7 @@ Iceberg bronze.raw_tickets  [Bronze]
     │  dbt stg_bronze_tickets (incremental append)
     ▼
 Iceberg silver.stg_silver_tickets  [Silver]
-    │  dbt fact_ticket_hour_long  (append-only EAV, watermark)
+    │  dbt fact_ticket_hour_long  (append-only EAV, field_sk BIGINT + month_sk, watermark)
     ▼
 Iceberg gold.fact_ticket_hour_long  [Gold — EAV]
     │  dbt fact_ticket_hour_wide  (PIVOT MERGE from hour_long delta)
@@ -833,7 +833,7 @@ All checks passed.
           <td><code>lakehouse_daily</code></td>
           <td><code>pipeline_daily.py</code></td>
           <td><code>0 2 * * *</code></td>
-          <td>Full daily Gold + Cache: dims → hour_long → hour_wide → day_wide → month_wide → <code>cache_ticket_daily</code> + <code>cache_daily_report</code> each dual-target (<code>--target prod</code> Iceberg then <code>--target mysql_cache</code> MySQL)</td>
+          <td>Full daily Gold + Cache: dims → hour_long → hour_wide → day_wide → month_wide → <code>cache_ticket_daily</code> + <code>cache_daily_report</code> each dual-target → <code>mysql_rotate_partitions</code> (760-day rolling window) → dbt test → notify</td>
         </tr>
         <tr>
           <td><code>lakehouse_backfill</code></td>
@@ -992,7 +992,7 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "changeme")  # WRONG — never
       <li>Integrate a secrets manager (HashiCorp Vault, AWS Secrets Manager, or equivalent)</li>
       <li>Replace Metabase embedded H2 with a production PostgreSQL backend</li>
       <li>Add Kubernetes RBAC policies scoped to the <code>lakehouse</code> namespace</li>
-      <li>Enable Polaris persistent storage (replace in-memory catalog with a database backend)</li>
+      <li>Enable Polaris persistent storage in production (already done locally via PostgreSQL JDBC; cloud deployments may require separate managed DB)</li>
       <li>Rotate all credentials before first production run</li>
     </ul>
   </section>
@@ -1029,6 +1029,7 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "changeme")  # WRONG — never
 ├── init_env.sh / init_env.ps1           # Step 1: generate .env (macOS/Linux / Windows)
 ├── k8s/
 │   ├── deploy.sh / deploy.ps1           # Step 2: one-click deploy (macOS/Linux / Windows)
+│   ├── smoke_test.sh                    # Post-deploy acceptance verification (AC-01/03/04/06)
 │   ├── data-source.yaml                 # Data Source POD: Deployment + ClusterIP Service
 │   ├── namespace.yaml / pvc.yaml
 │   ├── minio.yaml / mysql.yaml / postgres.yaml
@@ -1059,12 +1060,12 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "changeme")  # WRONG — never
 │       ├── 05_metabase_setup.py         # Metabase 2-dashboard auto-setup via REST API
 │       └── e2e_smoke_test.py            # End-to-end pipeline verification (6-step)
 ├── dbt/models/
-│   ├── bronze/                          # stg_bronze_tickets (append-only raw ingest)
-│   ├── silver/                          # stg_silver_tickets (PII mask, SLA flags)
+│   ├── bronze/                          # stg_bronze_tickets (append-only raw ingest, 8 EDD §8.2 audit cols)
+│   ├── silver/                          # stg_silver_tickets (MERGE dedup, PII mask, SLA flags)
 │   └── gold/
 │       ├── facts/
-│       │   ├── fact_ticket_hour_long.sql# EAV narrow fact (append-only, watermark)
-│       │   ├── fact_ticket_hour_wide.sql# PIVOT MERGE from hour_long delta (24h)
+│       │   ├── fact_ticket_hour_long.sql# EAV narrow fact (append-only, field_sk BIGINT + month_sk, watermark)
+│       │   ├── fact_ticket_hour_wide.sql# PIVOT MERGE from hour_long delta (field_sk pivot + month_sk)
 │       │   ├── fact_ticket_day_wide.sql # daily MERGE from hour_wide (7-day lookback)
 │       │   └── fact_ticket_month_wide.sql# monthly MERGE from day_wide (2-month)
 │       └── dims/                         # dim_date, dim_catsub, dim_perform, dim_prblm_source, dim_prblm_status
@@ -1079,12 +1080,14 @@ MYSQL_PASSWORD = os.environ.get("MYSQL_PASSWORD", "changeme")  # WRONG — never
     <ul>
       <li><strong><code>platform/data_source/app.py</code></strong> is a pure-stdlib Python HTTP server with <code>enableServiceLinks: false</code> in its pod spec to prevent k8s from injecting <code>DATA_SOURCE_PORT=tcp://...</code> which would crash <code>int()</code> parsing. The pod generates 5–20 rows every 5 minutes into a thread-safe in-memory deque; <code>GET /api/tickets</code> (alias: <code>/api/tickets/drain</code>) atomically returns and clears the buffer.</li>
       <li><strong><code>platform/init/fetch_and_ingest.py</code></strong> polls <code>/api/tickets/drain</code>, converts ISO timestamps to microsecond epoch for PyArrow, and appends to <code>iceberg.bronze.raw_tickets</code> via pyiceberg direct write. Called every 15 minutes by <code>lakehouse_streaming</code>.</li>
-      <li><strong><code>dbt/models/gold/facts/fact_ticket_hour_long.sql</code></strong> is an append-only EAV narrow fact (one row per grain×field_code). Reads silver via <code>prblm_sysdate &gt; MAX(updated_at) - 1 minute</code> — zero full-table scan, safe for 15-min streaming.</li>
-      <li><strong><code>dbt/models/gold/facts/fact_ticket_hour_wide.sql</code></strong> is an incremental PIVOT MERGE reading only delta rows from <code>hour_long</code>. 7-dimension composite unique key; trailing 24h watermark.</li>
+      <li><strong><code>dbt/models/gold/facts/fact_ticket_hour_long.sql</code></strong> is an append-only EAV narrow fact (one row per grain×field_sk). Metrics stored as <code>field_sk</code> BIGINT (xxhash64, EDD §9.4) + <code>month_sk</code> BIGINT; <code>field_code</code> VARCHAR is prohibited (EDD §9.1). Reads silver via <code>prblm_sysdate &gt; MAX(updated_at) - 1 minute</code> — zero full-table scan, safe for 15-min streaming.</li>
+      <li><strong><code>dbt/models/gold/facts/fact_ticket_hour_wide.sql</code></strong> is an incremental PIVOT MERGE reading only delta rows from <code>hour_long</code>; pivots 10 EAV <code>field_sk</code> values into wide columns and includes <code>month_sk</code>. 7-dimension composite unique key; trailing 24h watermark.</li>
       <li><strong><code>dbt/models/cache/cache_daily_report.sql</code></strong> is the primary Metabase source — Lambda Architecture UNION ALL (D-1 <code>fact_ticket_day_wide</code> + today SUM of <code>fact_ticket_hour_wide</code>) LEFT JOIN all dims. Runs dual-target each cycle.</li>
       <li><strong><code>04_generate_tickets.py</code></strong> writes 10M rows directly to Iceberg via pyiceberg and MinIO, bypassing Trino INSERT. This achieves approximately 200,000–1,000,000 rows per second on typical laptop hardware.</li>
       <li><strong><code>populate_mysql_cache.py</code></strong> runs aggregation SQL on Trino and bulk-inserts into MySQL using <code>executemany</code> with 5,000-row batches. The streaming DAG calls it with <code>--streaming</code> which reads from <code>iceberg.gold.fact_ticket_hour_wide</code> for today's date (≤500 rows, ~3s) and writes to <code>cache_ticket_hourly</code>. The daily DAG calls it without flags for a full historical rebuild.</li>
       <li><strong><code>configmap-trino.yaml</code></strong> is the only YAML that requires envsubst. <code>deploy.sh</code> substitutes <code>${VAR}</code> placeholders from <code>.env</code> using an inline Python script before applying.</li>
+      <li><strong><code>k8s/smoke_test.sh</code></strong> is run after <code>deploy.sh</code> to verify the critical Trino→Polaris→MinIO chain, Iceberg schemas, data-source API, and Airflow DAG state. Separate from <code>deploy.sh</code> by design — deployment and verification are distinct concerns. Exit 0 = all checks passed.</li>
+      <li><strong><code>k8s/configmap-mysql-init.yaml</code></strong> DDL includes 760 daily <code>RANGE(TO_DAYS(...))</code> partitions per table (730 active days + 30 buffer). The <code>mysql_rotate_partitions</code> task in <code>lakehouse_daily</code> drops partitions older than 760 days and reorganizes <code>p_future</code> to add the next day's partition — maintaining a rolling 730-day active window per EDD §10.6.5.</li>
     </ul>
   </section>
 
