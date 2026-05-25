@@ -11,9 +11,9 @@
 
   Target routing is isolated here per CLAUDE.md — no target.name in model SQL.
 #}
-{% macro mysql_cache_materialized() %}
-  {{ 'incremental' if target.name == 'mysql_cache' else 'table' }}
-{% endmacro %}
+{% macro mysql_cache_materialized() -%}
+{{ 'incremental' if target.name == 'mysql_cache' else 'table' }}
+{%- endmacro %}
 
 {#
   mysql_cache_delete_hook(relation)
@@ -23,10 +23,10 @@
   Returns a no-op SELECT for prod target so the hook is always syntactically
   valid.
 #}
-{% macro mysql_cache_delete_hook(relation) %}
-  {% if target.name == 'mysql_cache' %}
+{% macro mysql_cache_delete_hook(relation) -%}
+  {%- if target.name == 'mysql_cache' -%}
     DELETE FROM {{ relation }}
-  {% else %}
+  {%- else -%}
     SELECT 1
-  {% endif %}
-{% endmacro %}
+  {%- endif %}
+{%- endmacro %}
