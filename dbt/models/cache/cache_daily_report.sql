@@ -3,7 +3,6 @@
     materialized         = mysql_cache_materialized(),
     incremental_strategy = 'append',
     on_schema_change     = 'ignore',
-    pre_hook             = ["{{ mysql_cache_delete_hook(this) }}"],
     schema               = 'cache'
   )
 }}

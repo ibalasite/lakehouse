@@ -15,18 +15,3 @@
 {{ 'incremental' if target.name == 'mysql_cache' else 'table' }}
 {%- endmacro %}
 
-{#
-  mysql_cache_delete_hook(relation)
-  ─────────────────────────────────────────────────────────────────────────────
-  Pre-hook for mysql_cache incremental models: deletes all rows (preserving
-  partition structure) before the append INSERT, making each run a full refresh.
-  Returns a no-op SELECT for prod target so the hook is always syntactically
-  valid.
-#}
-{% macro mysql_cache_delete_hook(relation) -%}
-  {%- if target.name == 'mysql_cache' -%}
-    DELETE FROM {{ relation }}
-  {%- else -%}
-    SELECT 1
-  {%- endif %}
-{%- endmacro %}
