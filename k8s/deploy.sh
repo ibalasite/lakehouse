@@ -198,8 +198,11 @@ step "Applying ConfigMaps"
 envsubst_file "${SCRIPT_DIR}/configmap-trino.yaml" \
     | kubectl --context="${CONTEXT}" apply -f -
 
-# MySQL init SQL
-kubectl --context="${CONTEXT}" apply -f "${SCRIPT_DIR}/configmap-mysql-init.yaml"
+# MySQL init SQL — built dynamically from source to prevent drift with configmap-mysql-init.yaml
+${KC} create configmap mysql-initdb \
+    --from-file=03_mysql_init.sql="${INIT_DIR}/03_mysql_init.sql" \
+    --dry-run=client -o yaml \
+    | ${KC} apply -f -
 
 # Polaris app config + scope proxy script
 kubectl --context="${CONTEXT}" apply -f "${SCRIPT_DIR}/configmap-polaris.yaml"
