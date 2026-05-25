@@ -35,7 +35,9 @@ models:
         +incremental_strategy: merge
         +schema: gold
     cache:
-      +materialized: table
+      +materialized: incremental
+      +incremental_strategy: merge
+      +on_schema_change: ignore
       # database/schema are target-driven:
       #   --target prod        → iceberg.cache.* (model config: schema='cache')
       #   --target mysql_cache → mysql.lakehouse_cache.* (generate_schema_name returns target.schema)

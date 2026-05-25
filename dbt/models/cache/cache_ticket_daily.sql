@@ -1,7 +1,12 @@
 {{
   config(
-    materialized = 'table',
-    schema       = 'cache'
+    materialized         = 'incremental',
+    table_type           = platform_iceberg_table_type(),
+    incremental_strategy = platform_merge_strategy(),
+    unique_key           = ['prblm_date', 'catsub_id', 'prblm_source_id',
+                            'prblm_class_id', 'prblm_perform_id', 'prblm_status_id'],
+    on_schema_change     = 'ignore',
+    schema               = 'cache'
   )
 }}
 
@@ -15,9 +20,9 @@
     dbt run --select cache_ticket_daily --target prod        → iceberg.cache
     dbt run --select cache_ticket_daily --target mysql_cache → mysql.lakehouse_cache
 
-  Full table replace on each run (TABLE materialization).
-  MySQL lacks native MERGE via Trino connector; 730-day window is small enough
-  for a full refresh (~730 × daily grain rows).
+  Incremental MERGE on grain keys (EDD §10.5): only processes last
+  watermark_lookback_days (default 3) on incremental runs; full 730-day
+  window on first run or --full-refresh.
 
   Lineage:  fact_ticket_day_wide + dim_* → cache_ticket_daily (both targets)
 */
@@ -75,3 +80,6 @@ LEFT JOIN {{ ref('dim_prblm_status') }}       AS sts  ON f.prblm_status_id  = st
 LEFT JOIN {{ ref('dim_perform') }}            AS perf ON f.prblm_perform_id  = perf.prblm_perform_id
 
 WHERE f.prblm_date >= CURRENT_DATE - INTERVAL '730' DAY
+{% if is_incremental() %}
+  AND f.prblm_date >= CURRENT_DATE - INTERVAL '{{ var("watermark_lookback_days", 3) }}' DAY
+{% endif %}

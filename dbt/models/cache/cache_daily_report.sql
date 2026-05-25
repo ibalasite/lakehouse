@@ -1,7 +1,10 @@
 {{
   config(
-    materialized         = mysql_cache_materialized(),
-    incremental_strategy = 'append',
+    materialized         = 'incremental',
+    table_type           = platform_iceberg_table_type(),
+    incremental_strategy = platform_merge_strategy(),
+    unique_key           = ['date_sk', 'catsub_id', 'prblm_source_id', 'prblm_class_id',
+                            'prblm_perform_id', 'prblm_status_id', 'source_tier'],
     on_schema_change     = 'ignore',
     schema               = 'cache'
   )
@@ -69,6 +72,9 @@ LEFT JOIN {{ ref('dim_perform') }}            AS perf ON f.prblm_perform_id  = p
 
 WHERE f.prblm_date >= CURRENT_DATE - INTERVAL '730' DAY
   AND f.prblm_date < CAST(CURRENT_TIMESTAMP AT TIME ZONE 'Asia/Taipei' AS DATE)
+{% if is_incremental() %}
+  AND f.prblm_date >= CURRENT_DATE - INTERVAL '{{ var("watermark_lookback_days", 3) }}' DAY
+{% endif %}
 
 UNION ALL
 

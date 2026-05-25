@@ -152,34 +152,6 @@ def on_failure_callback(context: dict) -> None:
         log.error("Could not write failure log: %s", exc)
 
 
-# ── Truncate cache_daily_report before dbt incremental append ─────────────────
-def truncate_cache_daily_report_fn(**context) -> None:
-    """TRUNCATE cache_daily_report via direct MySQL connection before dbt append.
-
-    Trino's MySQL connector does not support DELETE/TRUNCATE (read-only at the
-    row level). Direct MySQL connection is the only way to clear the table while
-    preserving the PARTITION BY RANGE structure created by 03_mysql_init.sql.
-    Uses MYSQL_USER (ALL PRIVILEGES on lakehouse_cache — includes DROP/TRUNCATE).
-    """
-    import os
-    import mysql.connector
-
-    conn = mysql.connector.connect(
-        host=os.environ.get("MYSQL_HOST", "mysql"),
-        port=3306,
-        user=os.environ["MYSQL_USER"],
-        password=os.environ["MYSQL_PASSWORD"],
-        database="lakehouse_cache",
-        connection_timeout=30,
-    )
-    cur = conn.cursor()
-    cur.execute("TRUNCATE TABLE cache_daily_report")
-    conn.commit()
-    cur.close()
-    conn.close()
-    log.info("cache_daily_report truncated OK")
-
-
 # ── MySQL partition rotation (EDD §10.6.5) ────────────────────────────────────
 def rotate_mysql_partitions(**context) -> None:
     """Drop daily partitions older than 760 days; add tomorrow's partition.
@@ -434,16 +406,6 @@ Failures are logged to `/tmp/pipeline_failures.log`.
         ),
     )
 
-    truncate_cache_daily_report = PythonOperator(
-        task_id="truncate_cache_daily_report",
-        python_callable=truncate_cache_daily_report_fn,
-        doc_md=(
-            "TRUNCATE cache_daily_report via direct MySQL connection before dbt append. "
-            "Trino MySQL connector does not support DELETE/TRUNCATE; direct connection "
-            "preserves PARTITION BY RANGE structure while clearing stale rows."
-        ),
-    )
-
     dbt_cache_report_mysql = BashOperator(
         task_id="dbt_cache_report_mysql",
         bash_command=_dbt_run_mysql("cache_daily_report"),
@@ -491,6 +453,6 @@ Failures are logged to `/tmp/pipeline_failures.log`.
     check_source_data >> bronze_silver_group >> gold_group
 
     gold_group >> dbt_cache_iceberg >> dbt_cache_mysql
-    gold_group >> dbt_cache_report_iceberg >> truncate_cache_daily_report >> dbt_cache_report_mysql
+    gold_group >> dbt_cache_report_iceberg >> dbt_cache_report_mysql
 
     [dbt_cache_mysql, dbt_cache_report_mysql] >> mysql_rotate_partitions >> dbt_test >> notify
