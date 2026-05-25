@@ -39,13 +39,13 @@ spec:
             - name: AWS_REGION
               value: us-east-1
             - name: POLARIS_IO_S3_ENDPOINT
-              value: http://10.43.219.27:9000
+              value: http://minio.lakehouse.svc.cluster.local:9000
             - name: POLARIS_IO_S3_PATH_STYLE_ACCESS
               value: "true"
             - name: AWS_ENDPOINT_URL_STS
-              value: http://10.43.219.27:9000
+              value: http://minio.lakehouse.svc.cluster.local:9000
             - name: AWS_ENDPOINT_URL_S3
-              value: http://10.43.219.27:9000
+              value: http://minio.lakehouse.svc.cluster.local:9000
             - name: quarkus.http.port
               value: "8181"
             # ── PostgreSQL persistence (AC-02) ──────────────────────────────────

@@ -62,14 +62,14 @@ envsubst_file() {
     python3 - "$template" "${PROJECT_DIR}/.env" <<'PYEOF'
 import re, sys
 env = {}
-with open(sys.argv[2]) as f:
+with open(sys.argv[2], encoding='utf-8') as f:
     for line in f:
         line = line.strip()
         if not line or line.startswith('#') or '=' not in line:
             continue
         k, v = line.split('=', 1)
         env[k.strip()] = v.strip()
-with open(sys.argv[1]) as f:
+with open(sys.argv[1], encoding='utf-8') as f:
     content = f.read()
 print(re.sub(r'\${([^}]+)}', lambda m: env.get(m.group(1), ''), content))
 PYEOF
@@ -121,7 +121,7 @@ if [[ "${ROTATE}" == "true" ]]; then
     python3 - "${PROJECT_DIR}/.env" "${OLD_MYSQL_ROOT}" "${OLD_POSTGRES_PW}" <<'PYEOF'
 import re, sys
 path, mysql_root, pg_pw = sys.argv[1], sys.argv[2], sys.argv[3]
-with open(path) as f:
+with open(path, encoding='utf-8') as f:
     content = f.read()
 content = re.sub(r'^MYSQL_ROOT_PASSWORD=.*', f'MYSQL_ROOT_PASSWORD={mysql_root}', content, flags=re.M)
 content = re.sub(r'^POSTGRES_PASSWORD=.*',  f'POSTGRES_PASSWORD={pg_pw}',         content, flags=re.M)
@@ -130,7 +130,7 @@ content = re.sub(
     f'AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:{pg_pw}@postgres:5432/airflow',
     content, flags=re.M,
 )
-with open(path, 'w') as f:
+with open(path, 'w', encoding='utf-8') as f:
     f.write(content)
 PYEOF
     NEW_MYSQL_PW=$(grep '^MYSQL_PASSWORD=' "${PROJECT_DIR}/.env" | cut -d= -f2-)
@@ -246,6 +246,43 @@ ${KC} create configmap airflow-dags \
     --from-file=pipeline_streaming.py="${DAG_DIR}/pipeline_streaming.py" \
     --dry-run=client -o yaml \
     | kubectl --context="${CONTEXT}" apply -f -
+
+# dbt bundle — walk dbt/ (skip dbt_packages/logs/target/) and pack into a flat ConfigMap.
+# The airflow-scheduler init container unpacks this to /opt/airflow/dbt at pod start.
+# Uses '__' as path separator: models__bronze__stg_bronze_tickets.sql
+log "  Building dbt-bundle ConfigMap from dbt/ ..."
+python3 - "${PROJECT_DIR}/dbt" "${NAMESPACE}" "${CONTEXT}" <<'PYEOF'
+import os, sys, json, subprocess
+
+dbt_root, namespace, context = sys.argv[1], sys.argv[2], sys.argv[3]
+skip_dirs = {'dbt_packages', 'logs', 'target', '.git', '__pycache__'}
+data = {}
+for dirpath, dirnames, filenames in os.walk(dbt_root):
+    dirnames[:] = [d for d in dirnames if d not in skip_dirs]
+    for fname in filenames:
+        if fname.startswith('.'):
+            continue
+        full = os.path.join(dirpath, fname)
+        rel  = os.path.relpath(full, dbt_root)
+        # Normalise to forward-slash separator regardless of OS
+        key  = rel.replace(os.sep, '__').replace('/', '__')
+        try:
+            with open(full, encoding='utf-8') as f:
+                data[key] = f.read()
+        except (UnicodeDecodeError, OSError):
+            continue
+
+cm = {'apiVersion': 'v1', 'kind': 'ConfigMap',
+      'metadata': {'name': 'dbt-bundle', 'namespace': namespace},
+      'data': data}
+proc = subprocess.run(
+    ['kubectl', f'--context={context}', f'-n={namespace}', 'apply', '-f', '-'],
+    input=json.dumps(cm).encode(), capture_output=True)
+if proc.returncode != 0:
+    print(proc.stderr.decode(), file=sys.stderr)
+    sys.exit(1)
+print(f'  dbt-bundle: {len(data)} files bundled OK')
+PYEOF
 
 success "ConfigMaps applied"
 

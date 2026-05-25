@@ -166,8 +166,8 @@ def rotate_mysql_partitions(**context) -> None:
     import mysql.connector  # mysql-connector-python must be installed in Airflow image
 
     host = os.environ.get("MYSQL_HOST", "mysql")
-    port = int(os.environ.get("MYSQL_PORT", "3306"))
-    user = os.environ.get("MYSQL_USER", "root")
+    port = 3306  # hardcoded — MYSQL_PORT can be injected as tcp://IP:port by k8s service links
+    user = "root"  # DDL (ALTER TABLE partition) requires root; MYSQL_USER is the DML app user
     password = os.environ["MYSQL_ROOT_PASSWORD"]
 
     conn = mysql.connector.connect(

@@ -84,6 +84,7 @@ spec:
       labels:
         app: airflow-scheduler
     spec:
+      enableServiceLinks: false
       dnsConfig:
         options:
           - name: ndots
@@ -115,6 +116,37 @@ spec:
               memory: 512Mi
             limits:
               memory: 1Gi
+        - name: unpack-dbt
+          image: apache/airflow:2.9.1
+          command:
+            - python3
+            - "-c"
+            - |
+              import os
+              bundle = '/dbt-bundle'
+              dest = '/opt/airflow/dbt'
+              count = 0
+              for key in sorted(os.listdir(bundle)):
+                  src = os.path.join(bundle, key)
+                  if not os.path.isfile(src):
+                      continue
+                  parts = key.split('__')
+                  target = os.path.join(dest, *parts)
+                  os.makedirs(os.path.dirname(target), exist_ok=True)
+                  with open(src, encoding='utf-8') as fi, open(target, 'w', encoding='utf-8') as fo:
+                      fo.write(fi.read())
+                  count += 1
+              print(f'dbt bundle unpacked: {count} files')
+          volumeMounts:
+            - name: dbt-bundle
+              mountPath: /dbt-bundle
+            - name: dbt
+              mountPath: /opt/airflow/dbt
+          resources:
+            requests:
+              memory: 64Mi
+            limits:
+              memory: 128Mi
       containers:
         - name: scheduler
           image: apache/airflow:2.9.1
@@ -159,6 +191,9 @@ spec:
             - name: MYSQL_DATABASE
               valueFrom:
                 secretKeyRef: {name: lakehouse-secrets, key: MYSQL_DATABASE}
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef: {name: lakehouse-secrets, key: MYSQL_ROOT_PASSWORD}
             - name: METABASE_ADMIN_EMAIL
               valueFrom:
                 secretKeyRef: {name: lakehouse-secrets, key: METABASE_ADMIN_EMAIL}
@@ -228,9 +263,10 @@ spec:
         - name: pip-packages
           emptyDir: {}
         - name: dbt
-          hostPath:
-            path: /Users/tobala/projects/lakehouse/dbt
-            type: Directory
+          emptyDir: {}
+        - name: dbt-bundle
+          configMap:
+            name: dbt-bundle
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -247,6 +283,7 @@ spec:
       labels:
         app: airflow-webserver
     spec:
+      enableServiceLinks: false
       initContainers:
         - name: wait-db
           image: busybox:1.36

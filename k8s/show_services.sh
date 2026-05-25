@@ -24,7 +24,7 @@ _env() {
     python3 - "${ENV_FILE}" "$1" <<'PYEOF'
 import sys
 key = sys.argv[2]
-with open(sys.argv[1]) as f:
+with open(sys.argv[1], encoding='utf-8') as f:
     for line in f:
         line = line.strip()
         if not line or line.startswith('#') or '=' not in line:

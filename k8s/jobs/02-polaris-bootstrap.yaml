@@ -55,7 +55,7 @@ spec:
               valueFrom:
                 secretKeyRef: {name: lakehouse-secrets, key: MINIO_BUCKET}
             - name: POLARIS_IO_S3_ENDPOINT
-              value: http://10.43.219.27:9000
+              value: http://minio.lakehouse.svc.cluster.local:9000
           volumeMounts:
             - name: scripts
               mountPath: /scripts
