@@ -182,7 +182,7 @@ def rotate_mysql_partitions(**context) -> None:
     # Drop any partition whose date is older than today - 760 days.
     cutoff = today - timedelta(days=760)
 
-    tables = ("cache_ticket_daily", "cache_ticket_hourly")
+    tables = ("cache_ticket_daily", "cache_ticket_hourly", "cache_daily_report")
     for table in tables:
         cur.execute(
             """
