@@ -119,9 +119,10 @@ spec:
         - name: unpack-dbt
           image: apache/airflow:2.9.1
           command:
-            - python3
-            - "-c"
+            - sh
+            - -c
             - |
+              python3 -c "
               import os
               bundle = '/dbt-bundle'
               dest = '/opt/airflow/dbt'
@@ -137,16 +138,22 @@ spec:
                       fo.write(fi.read())
                   count += 1
               print(f'dbt bundle unpacked: {count} files')
+              "
+              PATH=/pip-packages/bin:$PATH PYTHONPATH=/pip-packages \
+                dbt deps --profiles-dir /opt/airflow/dbt --project-dir /opt/airflow/dbt \
+                && echo "dbt deps OK"
           volumeMounts:
+            - name: pip-packages
+              mountPath: /pip-packages
             - name: dbt-bundle
               mountPath: /dbt-bundle
             - name: dbt
               mountPath: /opt/airflow/dbt
           resources:
             requests:
-              memory: 64Mi
-            limits:
               memory: 128Mi
+            limits:
+              memory: 256Mi
       containers:
         - name: scheduler
           image: apache/airflow:2.9.1
