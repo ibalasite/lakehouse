@@ -409,14 +409,14 @@ log "  Running airflow-init job..."
 ${KC} wait job/airflow-init --for=condition=complete --timeout=180s \
     || { ${KC} logs job/airflow-init; fail "airflow-init job failed"; }
 wait_ready airflow-webserver 180
-log "  Waiting for Airflow scheduler to discover DAGs (up to 120s)..."
-for i in $(seq 1 24); do
+log "  Waiting for Airflow scheduler to discover DAGs (up to 300s)..."
+for i in $(seq 1 60); do
     if ${KC} exec deployment/airflow-scheduler -- airflow dags list 2>/dev/null | grep -q "lakehouse_streaming"; then
         success "DAGs discovered by scheduler"
         break
     fi
-    if [[ $i -eq 24 ]]; then
-        warn "DAGs not discovered after 120s — proceeding anyway"
+    if [[ $i -eq 60 ]]; then
+        warn "DAGs not discovered after 300s — proceeding anyway"
     else
         # 5s wait via a no-op
         ${KC} exec deployment/airflow-scheduler -- sh -c "sleep 5" 2>/dev/null || true

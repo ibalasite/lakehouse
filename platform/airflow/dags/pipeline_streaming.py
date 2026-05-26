@@ -52,9 +52,10 @@ _ALLOWED_SELECTORS: frozenset[str] = frozenset([
     "fact_ticket_hour_long",
     "fact_ticket_hour_wide",
     "cache_daily_report",
+    "cache_ticket_hourly",
 ])
 
-_ALLOWED_CACHE_SELECTORS: frozenset[str] = frozenset(["cache_daily_report"])
+_ALLOWED_CACHE_SELECTORS: frozenset[str] = frozenset(["cache_daily_report", "cache_ticket_hourly"])
 
 
 def _dbt_run(select: str, extra_vars: dict | None = None) -> str:
@@ -117,13 +118,6 @@ def on_failure_callback(context: dict) -> None:
     except OSError as exc:
         log.error("Could not write failure log: %s", exc)
 
-
-# ── Hourly cache refresh ───────────────────────────────────────────────────────
-# Reads today's pre-aggregated rows from gold.fact_ticket_hour_wide (EDD §8.6).
-_POPULATE_HOURLY_CMD = r"""
-set -e
-python3 /opt/airflow/scripts/populate_mysql_cache.py --streaming
-"""
 
 # ── Verify Metabase card ───────────────────────────────────────────────────────
 _VERIFY_CMD = r"""
@@ -192,8 +186,8 @@ Runs every **15 minutes**. EDD §13.2 streaming path.
 1. **ingest_from_source** — drains data-source pod HTTP API → `iceberg.bronze.raw_tickets`.
 2. **bronze_silver** group — incremental dbt bronze + silver merge.
 3. **gold_hour** group — `fact_ticket_hour_long` (append-only EAV) → `fact_ticket_hour_wide` (PIVOT MERGE).
-4. **cache_report** — `cache_daily_report` UNION ALL MV written to MySQL (primary Metabase source).
-5. **populate_hourly_cache** — refresh `cache_ticket_hourly` in MySQL from gold.
+4. **cache_report** — `cache_daily_report` UNION ALL MV (Iceberg → MySQL).
+5. **cache_hourly** — `cache_ticket_hourly` hourly grain MV (Iceberg → MySQL via Trino).
 6. **verify_dashboard** — spot-check Metabase hourly card returns data.
 
 Generates ≤60 rows per cycle. Gold append-only, no full scan, no OOMKill.
@@ -263,13 +257,25 @@ Generates ≤60 rows per cycle. Gold append-only, no full scan, no OOMKill.
         ),
     )
 
-    # ── 5. Hourly MySQL cache (raw hourly granularity) ─────────────────────────
-    populate_hourly_cache = BashOperator(
-        task_id      = "populate_hourly_cache",
-        bash_command = _POPULATE_HOURLY_CMD,
+    # ── 5. Hourly cache MV — dual target (EDD §13.2b) ────────────────────────
+    # cache_ticket_hourly: Iceberg first (source of truth) → MySQL mirror.
+    # Replaces direct populate_mysql_cache.py — all MySQL writes via dbt+Trino.
+    dbt_cache_hourly_iceberg = BashOperator(
+        task_id      = "dbt_cache_hourly_iceberg",
+        bash_command = _dbt_run("cache_ticket_hourly"),
+        pool         = "trino_slots",
         doc_md       = (
-            "Reads today's rows from iceberg.gold.fact_ticket_hour_wide and writes "
-            "to cache_ticket_hourly in MySQL. Used by hourly breakdown cards."
+            "Hourly cache MV (fact_ticket_hour_wide LEFT JOIN dims) "
+            "into iceberg.cache.cache_ticket_hourly. Iceberg is source of truth."
+        ),
+    )
+
+    dbt_cache_hourly_mysql = BashOperator(
+        task_id      = "dbt_cache_hourly_mysql",
+        bash_command = _dbt_run_mysql("cache_ticket_hourly"),
+        pool         = "trino_slots",
+        doc_md       = (
+            "Mirror cache_ticket_hourly into mysql.lakehouse_cache via Trino MySQL connector."
         ),
     )
 
@@ -281,14 +287,14 @@ Generates ≤60 rows per cycle. Gold append-only, no full scan, no OOMKill.
     )
 
     # ── Task ordering ─────────────────────────────────────────────────────────
-    # cache_daily_report: Iceberg first (source of truth) → MySQL mirror.
-    # populate_hourly_cache and verify_dashboard run after MySQL write completes.
+    # Both cache chains (report + hourly) run after gold_hour, Iceberg first.
+    # verify_dashboard runs after both MySQL mirrors complete.
     (
         ingest_from_source
         >> bronze_silver_group
         >> gold_hour_group
         >> dbt_cache_report_iceberg
         >> dbt_cache_report_mysql
-        >> populate_hourly_cache
-        >> verify_dashboard
     )
+    gold_hour_group >> dbt_cache_hourly_iceberg >> dbt_cache_hourly_mysql
+    [dbt_cache_report_mysql, dbt_cache_hourly_mysql] >> verify_dashboard

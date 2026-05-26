@@ -55,13 +55,14 @@ _ALLOWED_SELECTORS: frozenset[str] = frozenset(
         "fact_ticket_day_wide",
         "fact_ticket_month_wide",
         "cache_ticket_daily",
+        "cache_ticket_hourly",
         "cache_daily_report",
     ]
 )
 
 # Cache selectors are allowed for both targets (same model, two targets).
 _ALLOWED_CACHE_SELECTORS: frozenset[str] = frozenset(
-    ["cache_ticket_daily", "cache_daily_report"]
+    ["cache_ticket_daily", "cache_ticket_hourly", "cache_daily_report"]
 )
 
 
@@ -396,6 +397,22 @@ Failures are logged to `/tmp/pipeline_failures.log`.
         ),
     )
 
+    dbt_cache_hourly_iceberg = BashOperator(
+        task_id="dbt_cache_hourly_iceberg",
+        bash_command=_dbt_run("cache_ticket_hourly"),
+        pool="trino_slots",
+        doc_md="Write 730-day hourly cache (pre-joined dims) into iceberg.cache.cache_ticket_hourly.",
+    )
+
+    dbt_cache_hourly_mysql = BashOperator(
+        task_id="dbt_cache_hourly_mysql",
+        bash_command=_dbt_run_mysql("cache_ticket_hourly"),
+        pool="trino_slots",
+        doc_md=(
+            "Mirror cache_ticket_hourly into mysql.lakehouse_cache via Trino MySQL connector."
+        ),
+    )
+
     dbt_cache_report_iceberg = BashOperator(
         task_id="dbt_cache_report_iceberg",
         bash_command=_dbt_run("cache_daily_report"),
@@ -447,12 +464,13 @@ Failures are logged to `/tmp/pipeline_failures.log`.
     )
 
     # ── Task ordering ─────────────────────────────────────────────────────────
-    # Cache runs as two independent Iceberg→MySQL chains after gold completes.
-    # Iceberg is source of truth; MySQL mirrors follow. After both MySQL tasks
-    # complete, rotate MySQL partitions, then run the dbt test gate.
+    # Three independent Iceberg→MySQL cache chains run after gold completes.
+    # Iceberg is source of truth; MySQL mirrors follow via Trino MySQL connector.
+    # All three MySQL tasks must complete before partition rotation and dbt test.
     check_source_data >> bronze_silver_group >> gold_group
 
     gold_group >> dbt_cache_iceberg >> dbt_cache_mysql
+    gold_group >> dbt_cache_hourly_iceberg >> dbt_cache_hourly_mysql
     gold_group >> dbt_cache_report_iceberg >> dbt_cache_report_mysql
 
-    [dbt_cache_mysql, dbt_cache_report_mysql] >> mysql_rotate_partitions >> dbt_test >> notify
+    [dbt_cache_mysql, dbt_cache_hourly_mysql, dbt_cache_report_mysql] >> mysql_rotate_partitions >> dbt_test >> notify
