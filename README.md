@@ -116,7 +116,8 @@ The end-to-end pipeline must run and be observable in Metabase without manual in
    - `gold_hour.dbt_hour_wide` → PIVOT MERGE from `hour_long` delta rows
    - `dbt_cache_report_iceberg` → Lambda UNION ALL into `iceberg.cache.cache_daily_report`
    - `dbt_cache_report_mysql` → mirror into `mysql.lakehouse_cache.cache_daily_report`
-   - `populate_hourly_cache` → reads `fact_ticket_hour_wide` → writes to `cache_ticket_hourly`
+   - `dbt_cache_hourly_iceberg` → `cache_ticket_hourly` (fact_ticket_hour_wide LEFT JOIN dims) into `iceberg.cache`
+   - `dbt_cache_hourly_mysql` → mirror `cache_ticket_hourly` into `mysql.lakehouse_cache`
    - `verify_dashboard` → confirms Metabase hourly card returns rows
 3. **Metabase** **即時監控** dashboard auto-refreshes every 15 minutes and shows continuously increasing ticket counts for today
 
@@ -127,7 +128,7 @@ Acceptance: open Metabase, watch `cache_daily_report` row counts grow every 15 m
 本專案的端對端 pipeline 必須在無人工干預的情況下可在 Metabase 觀測：
 
 1. **Data Source POD** 每 **5 分鐘**產生 5–20 筆合成問題單
-2. **`lakehouse_streaming` DAG** 每 **15 分鐘**執行並完成所有任務（ingest → Bronze → Silver → Gold hour_long → Gold hour_wide → Cache MV Iceberg + MySQL → populate_hourly → verify）
+2. **`lakehouse_streaming` DAG** 每 **15 分鐘**執行並完成所有任務（ingest → Bronze → Silver → Gold hour_long → Gold hour_wide → cache_daily_report 雙 target → cache_ticket_hourly 雙 target → verify）
 3. **Metabase 即時監控**每 15 分鐘自動刷新，今日問題單數量持續增加
 
 驗收標準：開啟 Metabase，觀察到 `cache_daily_report` 每 15 分鐘更新一次。
@@ -200,8 +201,9 @@ Iceberg gold.fact_ticket_hour_wide  [Gold — Wide]
     │  dbt cache_daily_report  (Lambda UNION ALL: D-1 day_wide + today SUM(hour_wide))
     │    ├─ --target prod        → iceberg.cache.cache_daily_report
     │    └─ --target mysql_cache → mysql.lakehouse_cache.cache_daily_report
-    │  populate_mysql_cache.py --streaming
-    │  (reads fact_ticket_hour_wide → cache_ticket_hourly; ≤500 rows, ~3s)
+    │  dbt cache_ticket_hourly  (fact_ticket_hour_wide LEFT JOIN dims, dual-target EDD §13.2b)
+    │    ├─ --target prod        → iceberg.cache.cache_ticket_hourly
+    │    └─ --target mysql_cache → mysql.lakehouse_cache.cache_ticket_hourly
     ▼
 MySQL lakehouse_cache.cache_daily_report / cache_ticket_hourly
     │
@@ -214,11 +216,11 @@ Iceberg silver.stg_silver_tickets  [Silver]
     │  dbt fact_ticket_hour_long  → fact_ticket_hour_wide  → fact_ticket_day_wide  → fact_ticket_month_wide
     ▼
 Iceberg gold.*  [Gold — 5 dims + 4 facts]
-    │  dbt cache_ticket_daily  + cache_daily_report  (dual-target EDD §13.2b)
+    │  dbt cache_ticket_daily + cache_ticket_hourly + cache_daily_report  (dual-target EDD §13.2b)
     │    ├─ --target prod        → iceberg.cache.*
     │    └─ --target mysql_cache → mysql.lakehouse_cache.*
     ▼
-MySQL lakehouse_cache.cache_ticket_daily / cache_daily_report / cache_ticket_hourly
+MySQL lakehouse_cache.cache_ticket_daily / cache_ticket_hourly / cache_daily_report
     │
     └──> Metabase  客服問題單日報  (5 charts, daily)
     └──> Metabase  即時監控       (3 cards)
@@ -407,9 +409,9 @@ bash init_env.sh
 ./k8s/deploy.sh
 ```
 
-Reads `.env`, applies Kubernetes secrets, and redeploys all components. Passwords change on every deploy. **PVC data is preserved** — existing Iceberg files and MySQL tables remain intact. Use this for routine restarts after a laptop reboot.
+Reads `.env`, applies Kubernetes secrets, and redeploys all components. If `.env` doesn't exist it is auto-generated; an existing `.env` is reused as-is. **PVC data is preserved** — existing Iceberg files and MySQL tables remain intact. Use this for routine restarts after a laptop reboot.
 
-讀取 `.env`，套用 Kubernetes Secrets 並重新部署所有元件。每次部署密碼都會變更。**PVC 資料保留**——現有 Iceberg 檔案與 MySQL 表不受影響。適用於筆電重開後的例行重啟。
+讀取 `.env`，套用 Kubernetes Secrets 並重新部署所有元件。若 `.env` 不存在會自動產生；已存在的 `.env` 直接沿用（密碼不變）。**PVC 資料保留**——現有 Iceberg 檔案與 MySQL 表不受影響。適用於筆電重開後的例行重啟。
 
 ### Skip seed data / 跳過種子資料
 
@@ -554,8 +556,8 @@ Four DAGs are deployed automatically. All DAGs read credentials from Kubernetes 
 
 | DAG | File | Schedule | Purpose |
 |---|---|---|---|
-| `lakehouse_streaming` | `pipeline_streaming.py` | `*/15 * * * *` | **Primary streaming DAG**: ingest → Bronze → Silver → Gold hour_long (append-only EAV) → Gold hour_wide (PIVOT MERGE) → cache_daily_report (Iceberg + MySQL dual-target) → populate_hourly_cache (reads `fact_ticket_hour_wide`) → verify |
-| `lakehouse_daily` | `pipeline_daily.py` | `0 2 * * *` (02:00 UTC) | Full daily pipeline: Gold dims → hour_long → hour_wide → day_wide → month_wide → cache_ticket_daily + cache_daily_report (dual-target) → `mysql_rotate_partitions` (760-day rolling window) → dbt test → notify |
+| `lakehouse_streaming` | `pipeline_streaming.py` | `*/15 * * * *` | **Primary streaming DAG**: ingest → Bronze → Silver → Gold hour_long (append-only EAV) → Gold hour_wide (PIVOT MERGE) → cache_daily_report (dual-target Iceberg+MySQL) → cache_ticket_hourly (dual-target Iceberg+MySQL) → verify |
+| `lakehouse_daily` | `pipeline_daily.py` | `0 2 * * *` (02:00 UTC) | Full daily pipeline: Gold dims → hour_long → hour_wide → day_wide → month_wide → cache_ticket_daily + cache_ticket_hourly + cache_daily_report (all dual-target EDD §13.2b) → `mysql_rotate_partitions` (760-day rolling window) → dbt test → notify |
 | `lakehouse_backfill` | `pipeline_backfill.py` | Manual trigger only | Accepts `start_date` / `end_date` conf for historical backfill |
 | `lakehouse_hourly` | `pipeline_hourly.py` | Manual trigger / smoke test | Refreshes today's hourly rows; used by `e2e_smoke_test.py` |
 
@@ -834,6 +836,7 @@ lakehouse/
 │       │       └── fact_ticket_month_wide.sql# monthly MERGE from day_wide (2-month lookback)
 │       └── cache/
 │           ├── cache_ticket_daily.sql        # 730-day pre-joined flat table (dual-target)
+│           ├── cache_ticket_hourly.sql       # hourly grain pre-joined flat table (dual-target, EDD §13.2b)
 │           └── cache_daily_report.sql        # Lambda UNION ALL MV (dual-target, primary Metabase source)
 └── contracts/
     └── metrics/
@@ -848,20 +851,20 @@ lakehouse/
 - `dbt/models/gold/facts/fact_ticket_hour_long.sql` is an append-only EAV narrow fact (one row per grain×field_sk). Metrics stored as `field_sk` BIGINT (xxhash64, EDD §9.4) and `month_sk` BIGINT; `field_code` VARCHAR is prohibited (EDD §9.1). Reads silver via `prblm_sysdate > MAX(updated_at) - 1 minute` watermark — zero full-table scan, safe for 15-min streaming cycles.
 - `dbt/models/gold/facts/fact_ticket_hour_wide.sql` is an incremental PIVOT MERGE model. It reads only delta rows from `hour_long` (watermark on `hour_long.updated_at`), pivoting 10 EAV `field_sk` values into wide columns; includes `month_sk`. 7-dimension composite unique key.
 - `dbt/models/gold/facts/fact_ticket_day_wide.sql` aggregates from `fact_ticket_hour_wide` with a 7-day business date lookback. Stores sum/cnt components for correct weighted-average re-aggregation across periods.
-- `dbt/models/cache/cache_ticket_daily.sql` and `cache_daily_report.sql` each run twice per DAG cycle (EDD §13.2b): `--target prod` writes to `iceberg.cache.*`; `--target mysql_cache` mirrors to `mysql.lakehouse_cache.*`. `generate_schema_name` macro handles the schema routing.
+- `dbt/models/cache/cache_ticket_daily.sql`, `cache_ticket_hourly.sql`, and `cache_daily_report.sql` each run twice per DAG cycle (EDD §13.2b): `--target prod` writes to `iceberg.cache.*`; `--target mysql_cache` mirrors to `mysql.lakehouse_cache.*`. `generate_schema_name` macro handles the schema routing. `cache_ticket_hourly` uses a 3-day incremental lookback (`watermark_lookback_days`, default 3) and a 730-day full-refresh window.
 - `04_generate_tickets.py` writes 10M rows directly to Iceberg via pyiceberg and MinIO, bypassing Trino INSERT. This achieves approximately 200,000–1,000,000 rows per second on typical laptop hardware.
-- `populate_mysql_cache.py` runs aggregation SQL on Trino and bulk-inserts into MySQL using `executemany` with 5,000-row batches. The streaming DAG calls it with `--streaming` which reads from `iceberg.gold.fact_ticket_hour_wide` for today's date (≤500 rows, ~3s) and writes to `cache_ticket_hourly`. The daily DAG calls it without flags for a full historical rebuild of `cache_ticket_hourly`.
+- `populate_mysql_cache.py` runs aggregation SQL on Trino and bulk-inserts into MySQL using `executemany` with 5,000-row batches. This script is retained as a utility for manual use but is no longer called by any DAG — all `cache_ticket_hourly` writes are now handled by the dbt dual-target pattern (EDD §13.2b SSOT).
 - `configmap-trino.yaml` is the only YAML that requires envsubst. It contains `${POLARIS_CLIENT_ID}`, `${POLARIS_CLIENT_SECRET}`, `${MINIO_ROOT_USER}`, and `${MINIO_ROOT_PASSWORD}` placeholders that `deploy.sh` substitutes from `.env` using an inline Python script before applying.
 - `k8s/smoke_test.sh` is run after `deploy.sh` to verify the critical Trino→Polaris→MinIO chain, Iceberg schema presence, data-source API, and Airflow DAG state. Exit 0 = all checks passed. Separate from `deploy.sh` by design — deployment and verification are distinct concerns.
-- `k8s/configmap-mysql-init.yaml` DDL includes 760 daily `RANGE(TO_DAYS(...))` partitions per table (730 active days + 30 buffer), starting from 2024-05-24. The `mysql_rotate_partitions` task in `lakehouse_daily` drops partitions older than 760 days and reorganizes `p_future` to add the next day's partition — maintaining a rolling 730-day active window per EDD §10.6.5.
+- `platform/init/03_mysql_init.sql` DDL includes 2191 daily `RANGE(TO_DAYS(...))` partitions per table (format `pYYYY_MM_DD`) spanning 2022-01-01 through 2027-12-31, plus a `p_future VALUES LESS THAN MAXVALUE` sentinel per EDD §10.6.5. The `mysql_rotate_partitions` task in `lakehouse_daily` drops partitions older than 760 days and reorganizes `p_future` to add the next day's partition — maintaining a rolling 730-day active window. Monthly partitions (`pYYYY_MM`) are explicitly prohibited.
 
 - `platform/data_source/app.py` 是純 stdlib Python HTTP 伺服器，pod spec 設定 `enableServiceLinks: false`（防止 k8s 注入 `DATA_SOURCE_PORT=tcp://...` 造成 `int()` 解析崩潰）。pod 每 5 分鐘向記憶體 deque 生成 5–20 筆資料；`GET /api/tickets`（或 `/api/tickets/drain`）原子性地返回並清除緩衝區。
 - `platform/init/fetch_and_ingest.py` 輪詢 `/api/tickets/drain`，將 ISO 時間戳轉換為 PyArrow 所需的微秒 epoch，並透過 pyiceberg 直接寫入追加至 `iceberg.bronze.raw_tickets`。由 `lakehouse_streaming` DAG 每 15 分鐘呼叫。
 - `dbt/models/gold/facts/fact_ticket_hour_long.sql` 是 append-only EAV narrow fact（每 grain×field_sk 一行）。指標以 `field_sk` BIGINT（xxhash64，EDD §9.4）+ `month_sk` BIGINT 儲存，禁用 `field_code` VARCHAR（EDD §9.1）。透過 `prblm_sysdate > MAX(updated_at) - 1 分鐘` 水位線讀取 silver 新增資料，無全表掃描，適合 15 分鐘串流週期。
 - `dbt/models/gold/facts/fact_ticket_hour_wide.sql` 是增量 PIVOT MERGE 模型，只讀 `hour_long` 的 delta 行，將 10 個 EAV `field_sk` 樞軸展開為寬格式欄位，包含 `month_sk`，7 維複合 unique_key。
-- `dbt/models/cache/cache_ticket_daily.sql` 與 `cache_daily_report.sql` 每次 DAG 執行兩遍（EDD §13.2b）：`--target prod` 寫入 `iceberg.cache.*`；`--target mysql_cache` 鏡像至 `mysql.lakehouse_cache.*`。
+- `dbt/models/cache/cache_ticket_daily.sql`、`cache_ticket_hourly.sql` 與 `cache_daily_report.sql` 每次 DAG 執行兩遍（EDD §13.2b）：`--target prod` 寫入 `iceberg.cache.*`；`--target mysql_cache` 鏡像至 `mysql.lakehouse_cache.*`。`cache_ticket_hourly` 使用 3 天增量 lookback（`watermark_lookback_days`）。
 - `04_generate_tickets.py` 寫入 1,000 萬筆資料，透過 pyiceberg 和 MinIO 直接寫入 Iceberg，在典型筆電硬體上可達約 200,000–1,000,000 行/秒。
-- `populate_mysql_cache.py` 在 Trino 執行聚合 SQL，以 5,000 行批次透過 `executemany` 大量插入 MySQL。串流 DAG 使用 `--streaming` 旗標，從 `iceberg.gold.fact_ticket_hour_wide` 讀取今日資料（≤500 筆，~3 秒）並寫入 `cache_ticket_hourly`。每日 DAG 執行完整歷史重建。
+- `populate_mysql_cache.py` 在 Trino 執行聚合 SQL，以 5,000 行批次透過 `executemany` 大量插入 MySQL。此腳本保留作為手動工具，**不再由任何 DAG 呼叫**——所有 `cache_ticket_hourly` 寫入已改由 dbt 雙 target 模式負責（EDD §13.2b SSOT）。
 - `configmap-trino.yaml` 是唯一需要 envsubst 的 YAML，`deploy.sh` 在套用前使用內嵌 Python 腳本從 `.env` 替換佔位符。
 
 ---
