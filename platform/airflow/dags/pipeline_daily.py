@@ -298,6 +298,7 @@ Failures are logged to `/tmp/pipeline_failures.log`.
     check_source_data = BashOperator(
         task_id="check_source_data",
         bash_command=(
+            "PATH=/pip-packages/bin:$PATH "
             f"trino --server {TRINO_SERVER} --catalog iceberg --schema bronze "
             "--execute \"SELECT count(*) AS new_rows "
             "FROM iceberg.bronze.raw_tickets "

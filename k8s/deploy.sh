@@ -424,8 +424,7 @@ for i in $(seq 1 60); do
     if [[ $i -eq 60 ]]; then
         warn "DAGs not discovered after 300s — proceeding anyway"
     else
-        # 5s wait via a no-op
-        ${KC} exec deployment/airflow-scheduler -- sh -c "sleep 5" 2>/dev/null || true
+        sleep 5
     fi
 done
 log "  Creating trino_slots pool (serializes dbt tasks to prevent Trino OOMKill)..."
