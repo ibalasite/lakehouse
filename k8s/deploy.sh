@@ -51,7 +51,12 @@ KC="kubectl --context=${CONTEXT} -n ${NAMESPACE}"
 step "Checking prerequisites"
 command -v kubectl >/dev/null || fail "kubectl not found"
 command -v python3  >/dev/null || fail "python3 not found"
-[[ -f "${PROJECT_DIR}/.env" ]] || fail ".env not found — run: bash init_env.sh"
+if [[ ! -f "${PROJECT_DIR}/.env" ]]; then
+    log ".env not found — auto-generating credentials with init_env.sh ..."
+    bash "${PROJECT_DIR}/init_env.sh" \
+        || fail "init_env.sh failed — check openssl / python3 / cryptography are available"
+    success ".env generated"
+fi
 kubectl --context="${CONTEXT}" cluster-info >/dev/null 2>&1 \
     || fail "Cannot reach Rancher Desktop cluster (context: ${CONTEXT})"
 success "kubectl connected to ${CONTEXT}"
@@ -409,6 +414,7 @@ log "  Running airflow-init job..."
 ${KC} wait job/airflow-init --for=condition=complete --timeout=180s \
     || { ${KC} logs job/airflow-init; fail "airflow-init job failed"; }
 wait_ready airflow-webserver 180
+wait_ready airflow-scheduler 300
 log "  Waiting for Airflow scheduler to discover DAGs (up to 300s)..."
 for i in $(seq 1 60); do
     if ${KC} exec deployment/airflow-scheduler -- airflow dags list 2>/dev/null | grep -q "lakehouse_streaming"; then
