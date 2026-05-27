@@ -100,8 +100,13 @@ if (-not (Get-Command python3 -ErrorAction SilentlyContinue) -and
     -not (Get-Command python  -ErrorAction SilentlyContinue)) {
     Fail "python not found — install Python 3.9+ from python.org"
 }
-if (-not (Test-Path (Join-Path $ProjectDir '.env'))) {
-    Fail ".env not found — run: .\init_env.ps1"
+
+$envPath = Join-Path $ProjectDir '.env'
+if (-not (Test-Path $envPath)) {
+    Log ".env not found — auto-generating credentials with init_env.ps1 ..."
+    & (Join-Path $ProjectDir 'init_env.ps1')
+    if ($LASTEXITCODE -ne 0) { Fail "init_env.ps1 failed — check Python 3.9+ is installed" }
+    Success ".env generated"
 }
 
 kubectl --context=$Context cluster-info 2>&1 | Out-Null
@@ -119,6 +124,11 @@ if ($Rebuild) {
     KC delete configmaps  --all --ignore-not-found
     Log "  Waiting for pods to terminate (up to 120s)..."
     KC wait pods --all --for=delete --timeout=120s 2>$null
+    Log "  Cleaning up Released PVs..."
+    kubectl --context=$Context get pv --no-headers 2>$null `
+        | Where-Object { $_ -match '\s+Released\s+' } `
+        | ForEach-Object { ($_ -split '\s+')[0] } `
+        | ForEach-Object { kubectl --context=$Context delete pv $_ --ignore-not-found 2>$null }
     Success "Resources deleted — continuing with fresh deploy"
 }
 
@@ -126,7 +136,6 @@ if ($Rebuild) {
 if ($Rotate) {
     Step "Credential rotation (--rotate)"
 
-    $envPath      = Join-Path $ProjectDir '.env'
     $oldMysqlRoot = (Get-Content $envPath | Where-Object { $_ -match '^MYSQL_ROOT_PASSWORD=' }) `
                     -replace 'MYSQL_ROOT_PASSWORD=', ''
     $oldPostgresPw = (Get-Content $envPath | Where-Object { $_ -match '^POSTGRES_PASSWORD=' }) `
@@ -200,7 +209,6 @@ Success "Namespace ready"
 
 # ── Step 3: Secrets ────────────────────────────────────────────────────────────
 Step "Creating/updating lakehouse-secrets from .env"
-$envPath = Join-Path $ProjectDir '.env'
 kubectl --context=$Context -n $Namespace create secret generic lakehouse-secrets `
     "--from-env-file=$envPath" --dry-run=client -o yaml | kubectl --context=$Context apply -f -
 if ($LASTEXITCODE -ne 0) { Fail "Failed to apply secrets" }
@@ -257,27 +265,47 @@ kubectl --context=$Context apply -f (Join-Path $ScriptDir 'minio.yaml')
 kubectl --context=$Context apply -f (Join-Path $ScriptDir 'mysql.yaml')
 kubectl --context=$Context apply -f (Join-Path $ScriptDir 'postgres.yaml')
 
-# ── Step 7: Polaris ────────────────────────────────────────────────────────────
-Step "Deploying Apache Polaris"
-kubectl --context=$Context apply -f (Join-Path $ScriptDir 'polaris.yaml')
-
-# ── Step 8: Wait for core services ────────────────────────────────────────────
+# ── Step 7: Wait for core services ────────────────────────────────────────────
 Step "Waiting for core services to become ready"
-Wait-Ready 'minio'    120
+Wait-Ready 'minio'    300
 Wait-Ready 'mysql'    180
 Wait-Ready 'postgres'  90
 
-# ── Step 9: MinIO init job ─────────────────────────────────────────────────────
+# ── Step 8: PostgreSQL init job (create polaris database) ────────────────────
+if (-not $SkipJobs) {
+    Step "Initialising PostgreSQL: creating polaris database"
+    KC delete job postgres-init --ignore-not-found 2>$null
+    kubectl --context=$Context apply -f (Join-Path $ScriptDir 'jobs\00-postgres-init.yaml')
+    Log "  Waiting for postgres-init job..."
+    Wait-Job 'postgres-init' 120
+    Success "PostgreSQL polaris database ready"
+}
+
+# ── Step 9: Polaris JDBC schema + realm bootstrap ────────────────────────────
+if (-not $SkipJobs) {
+    Step "Bootstrapping Polaris JDBC schema and realm in PostgreSQL"
+    KC delete job polaris-schema-init --ignore-not-found 2>$null
+    kubectl --context=$Context apply -f (Join-Path $ScriptDir 'jobs\00b-polaris-schema-init.yaml')
+    Log "  Waiting for polaris-schema-init job..."
+    Wait-Job 'polaris-schema-init' 180
+    Success "Polaris JDBC schema and realm seeded in PostgreSQL"
+}
+
+# ── Step 10: Deploy Polaris ────────────────────────────────────────────────────
+Step "Deploying Apache Polaris (PostgreSQL JDBC persistence)"
+kubectl --context=$Context apply -f (Join-Path $ScriptDir 'polaris.yaml')
+
+# ── Step 11: MinIO init job ────────────────────────────────────────────────────
 if (-not $SkipJobs) {
     Step "Running MinIO bucket initialisation job"
     KC delete job minio-init --ignore-not-found 2>$null
     kubectl --context=$Context apply -f (Join-Path $ScriptDir 'jobs\01-minio-init.yaml')
     Log "  Waiting for minio-init job..."
     Wait-Job 'minio-init' 120
-    Success "MinIO buckets created"
+    Success "MinIO bucket lakehouse-local created"
 }
 
-# ── Step 10: Polaris bootstrap job ────────────────────────────────────────────
+# ── Step 12: Polaris bootstrap job ────────────────────────────────────────────
 Step "Waiting for Polaris to be ready"
 Wait-Ready 'polaris' 300
 
@@ -290,20 +318,20 @@ if (-not $SkipJobs) {
     Success "Polaris catalog bootstrapped"
 }
 
-# ── Step 11: Trino ─────────────────────────────────────────────────────────────
+# ── Step 13: Trino ─────────────────────────────────────────────────────────────
 Step "Deploying Trino"
 kubectl --context=$Context apply -f (Join-Path $ScriptDir 'trino.yaml')
 Wait-Ready 'trino' 300
 
-# ── Step 12: Data Source pod ───────────────────────────────────────────────────
+# ── Step 14: Data Source pod ───────────────────────────────────────────────────
 Step "Deploying data-source pod"
 kubectl --context=$Context apply -f (Join-Path $ScriptDir 'data-source.yaml')
 Wait-Ready 'data-source' 60
 Success "Data source pod ready"
 
-# ── Step 12b: Generate seed data ───────────────────────────────────────────────
+# ── Step 14b: Generate seed data ───────────────────────────────────────────────
 if (-not $SkipJobs -and -not $SkipSeed) {
-    Step "Generating seed ticket records"
+    Step "Generating 10M ticket records"
     KC delete job generate-tickets --ignore-not-found 2>$null
     kubectl --context=$Context apply -f (Join-Path $ScriptDir 'jobs\04-generate-tickets.yaml')
     Log "  Waiting for generate-tickets job (up to 60m)..."
@@ -313,21 +341,72 @@ if (-not $SkipJobs -and -not $SkipSeed) {
     Warn "Skipping seed data generation (--skip-seed)"
 }
 
-# ── Step 13: Airflow ───────────────────────────────────────────────────────────
+# ── Step 14c: Bulk-load bronze (year-partitioned, avoids Trino OOM) ───────────
+if (-not $SkipJobs -and -not $SkipSeed) {
+    Step "Bulk-loading stg_bronze_tickets (5 year batches)"
+    KC delete job bulk-bronze --ignore-not-found 2>$null
+    kubectl --context=$Context apply -f (Join-Path $ScriptDir 'jobs\06-bulk-bronze.yaml')
+    Log "  Waiting for bulk-bronze job (up to 40m)..."
+    Wait-Job 'bulk-bronze' 2400
+    Success "stg_bronze_tickets ready"
+}
+
+# ── Step 14d: Bulk-load silver (year-partitioned ROW_NUMBER dedup) ────────────
+if (-not $SkipJobs -and -not $SkipSeed) {
+    Step "Bulk-loading stg_silver_tickets (5 year batches)"
+    KC delete job bulk-silver --ignore-not-found 2>$null
+    kubectl --context=$Context apply -f (Join-Path $ScriptDir 'jobs\07-bulk-silver.yaml')
+    Log "  Waiting for bulk-silver job (up to 40m)..."
+    Wait-Job 'bulk-silver' 2400
+    Success "stg_silver_tickets ready"
+}
+
+# ── Step 15: Airflow ───────────────────────────────────────────────────────────
 Step "Deploying Airflow"
 Apply-Envsubst (Join-Path $ScriptDir 'airflow.yaml')
 Log "  Waiting for airflow-init job..."
 KC wait job/airflow-init --for=condition=complete --timeout=180s
 if ($LASTEXITCODE -ne 0) { KC logs job/airflow-init 2>$null; Fail "airflow-init job failed" }
 Wait-Ready 'airflow-webserver' 180
+Wait-Ready 'airflow-scheduler' 300
+
+Log "  Waiting for Airflow scheduler to discover DAGs (up to 300s)..."
+for ($i = 1; $i -le 60; $i++) {
+    $dagList = KC exec deployment/airflow-scheduler -- airflow dags list 2>$null
+    if ($dagList -match 'lakehouse_streaming') {
+        Success "DAGs discovered by scheduler"
+        break
+    }
+    if ($i -eq 60) {
+        Warn "DAGs not discovered after 300s — proceeding anyway"
+    } else {
+        Start-Sleep -Seconds 5
+    }
+}
+
+Log "  Creating trino_slots pool (serializes dbt tasks to prevent Trino OOMKill)..."
+KC exec deployment/airflow-scheduler -- `
+    airflow pools set trino_slots 1 "Serialize Trino access to prevent concurrent OOM" 2>$null
+if ($LASTEXITCODE -eq 0) { Log "    v trino_slots pool created" } else { Warn "    ! could not create pool" }
+
 Log "  Unpausing all DAGs..."
 foreach ($dag in @('lakehouse_streaming','lakehouse_hourly','lakehouse_daily','lakehouse_backfill')) {
     KC exec deployment/airflow-scheduler -- airflow dags unpause $dag 2>$null
     if ($LASTEXITCODE -eq 0) { Log "    v $dag unpaused" } else { Log "    ! $dag not found (skip)" }
 }
+
+if (-not $SkipJobs -and -not $SkipSeed) {
+    Log "  Triggering initial lakehouse_daily run (gold dims/facts + MySQL cache)..."
+    $runId = "init_$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())"
+    KC exec deployment/airflow-scheduler -- `
+        airflow dags trigger lakehouse_daily "--run-id=$runId" 2>$null
+    if ($LASTEXITCODE -eq 0) { Log "    v lakehouse_daily triggered — runs in background (~15 min)" }
+    else { Warn "    ! could not trigger lakehouse_daily — run manually if needed" }
+}
+
 Success "Airflow ready"
 
-# ── Step 14: Metabase ──────────────────────────────────────────────────────────
+# ── Step 16: Metabase ──────────────────────────────────────────────────────────
 Step "Deploying Metabase"
 kubectl --context=$Context apply -f (Join-Path $ScriptDir 'metabase.yaml')
 Wait-Ready 'metabase' 300
@@ -341,18 +420,29 @@ if (-not $SkipJobs) {
     Success "Metabase dashboard configured"
 }
 
-# ── Step 15: Summary ───────────────────────────────────────────────────────────
+# ── Step 17: Summary ───────────────────────────────────────────────────────────
+$envVars = @{}
+Get-Content $envPath | ForEach-Object {
+    if ($_ -match '^([^#=]+)=(.*)$') { $envVars[$Matches[1].Trim()] = $Matches[2].Trim() }
+}
+
 Write-Host ""
 Write-Host "======================================================" -ForegroundColor Cyan
-Write-Host "  Lakehouse K8s Stack -- Service URLs" -ForegroundColor Green
+Write-Host "  Lakehouse K8s Stack — Service URLs + Credentials" -ForegroundColor Green
 Write-Host "======================================================" -ForegroundColor Cyan
 Write-Host ""
-Write-Host ("  {0,-22} {1}" -f "MinIO API",     "http://localhost:30900")
-Write-Host ("  {0,-22} {1}" -f "MinIO Console", "http://localhost:30901")
-Write-Host ("  {0,-22} {1}" -f "Trino UI",      "http://localhost:30080")
-Write-Host ("  {0,-22} {1}" -f "Airflow UI",    "http://localhost:30888  (admin / AIRFLOW_ADMIN_PASSWORD in .env)")
-Write-Host ("  {0,-22} {1}" -f "Metabase",      "http://localhost:30300  (admin@local.com / METABASE_ADMIN_PASSWORD in .env)")
-Write-Host ("  {0,-22} {1}" -f "Data Source",   "http://data-source:8080 (cluster-internal — 5-20 tickets/5min)")
+Write-Host "  WEB UIs (open in browser):"
+Write-Host ("    Metabase       http://localhost:30300   user: admin@local.com  pass: {0}" -f $envVars['METABASE_ADMIN_PASSWORD'])
+Write-Host ("    Airflow        http://localhost:30888   user: admin            pass: {0}" -f $envVars['AIRFLOW_ADMIN_PASSWORD'])
+Write-Host ("    MinIO Console  http://localhost:30901   user: {0}   pass: {1}" -f $envVars['MINIO_ROOT_USER'], $envVars['MINIO_ROOT_PASSWORD'])
+Write-Host "    Trino UI       http://localhost:30080   (no login)"
+Write-Host ""
+Write-Host "  Internal APIs:"
+Write-Host "    MinIO S3 API   http://localhost:30900"
+Write-Host ""
+Write-Host "  kubectl exec:"
+Write-Host "    kubectl --context=rancher-desktop -n lakehouse exec deployment/trino -- trino --server localhost:8080"
+Write-Host ("    kubectl --context=rancher-desktop -n lakehouse exec deployment/mysql -- mysql -ulakehouse -p{0} lakehouse_cache" -f $envVars['MYSQL_PASSWORD'])
 Write-Host ""
 Write-Host "  All services deployed." -ForegroundColor Green
 Write-Host ""

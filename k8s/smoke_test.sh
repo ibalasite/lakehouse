@@ -45,8 +45,9 @@ fi
 
 # ── 2. Trino → Polaris → MinIO end-to-end write (EDD §14 Phase 1) ─────────────
 section "EDD §14  Trino→Polaris→MinIO write/read"
-TRINO_WRITE=$(${KC} exec deployment/airflow-scheduler -- \
-    trino --server trino:8080 --catalog iceberg \
+# exec on the trino pod: the trinodb/trino image ships the Java Trino CLI in PATH.
+TRINO_WRITE=$(${KC} exec deployment/trino -- \
+    trino --server localhost:8080 --catalog iceberg \
     --execute "DROP TABLE IF EXISTS iceberg.bronze.smoke_test;
                CREATE TABLE iceberg.bronze.smoke_test (id BIGINT);
                INSERT INTO iceberg.bronze.smoke_test VALUES (1);
@@ -56,8 +57,8 @@ TRINO_WRITE=$(${KC} exec deployment/airflow-scheduler -- \
 if [[ "${TRINO_WRITE}" == "1" ]]; then
     pass "Trino → Polaris REST Catalog → MinIO write/read OK"
     # Cleanup — failure here is non-fatal
-    ${KC} exec deployment/airflow-scheduler -- \
-        trino --server trino:8080 \
+    ${KC} exec deployment/trino -- \
+        trino --server localhost:8080 \
         --execute "DROP TABLE IF EXISTS iceberg.bronze.smoke_test;" \
         2>/dev/null || true
 else
@@ -66,8 +67,8 @@ fi
 
 # ── 3. Iceberg schema presence (AC-03) ────────────────────────────────────────
 section "AC-03  Iceberg schemas (bronze / silver / gold / cache)"
-SCHEMAS=$(${KC} exec deployment/airflow-scheduler -- \
-    trino --server trino:8080 \
+SCHEMAS=$(${KC} exec deployment/trino -- \
+    trino --server localhost:8080 \
     --execute "SHOW SCHEMAS IN iceberg;" \
     2>/dev/null | tr -d '" ' || true)
 

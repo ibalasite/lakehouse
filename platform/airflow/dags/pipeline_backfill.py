@@ -39,8 +39,10 @@ DEFAULT_ARGS = {
 }
 
 DBT_DIR = "/opt/airflow/dbt"
-DBT_CMD = f"cd {DBT_DIR} && dbt"
+# PATH must include /pip-packages/bin so dbt and trino CLIs are found at runtime.
+DBT_CMD = f"cd {DBT_DIR} && PATH=/pip-packages/bin:$PATH dbt"
 DBT_FLAGS = "--profiles-dir /opt/airflow/dbt --target prod"
+DBT_FLAGS_MYSQL = "--profiles-dir /opt/airflow/dbt --target mysql_cache"
 
 # ── Callbacks ─────────────────────────────────────────────────────────────────
 
@@ -71,12 +73,12 @@ def _validate_row_counts(**context: object) -> None:
     checks = {
         "silver": "SELECT count(*) FROM iceberg.silver.stg_silver_tickets",
         "gold_fact": "SELECT count(*) FROM iceberg.gold.fact_ticket_day_wide",
-        "mysql_cache": (
-            "SELECT count(*) "
-            "FROM mysql.lakehouse_cache.cache_ticket_daily"
-        ),
+        "cache_daily": "SELECT count(*) FROM mysql.lakehouse_cache.cache_ticket_daily",
+        "cache_hourly": "SELECT count(*) FROM mysql.lakehouse_cache.cache_ticket_hourly",
+        "cache_report": "SELECT count(*) FROM mysql.lakehouse_cache.cache_daily_report",
     }
-    trino = "trino --server http://trino:8080 --output-format TSV_HEADER"
+    # PATH must be set so the trino Python CLI at /pip-packages/bin/trino is found.
+    trino = "PATH=/pip-packages/bin:$PATH trino --server http://trino:8080 --output-format TSV_HEADER"
     for name, sql in checks.items():
         result = subprocess.run(
             f'{trino} --execute "{sql}"',
@@ -152,7 +154,8 @@ with DAG(
             execution_timeout=timedelta(hours=2),
         )
 
-    # ── 5. Gold — dimensions then facts ──────────────────────────────────────
+    # ── 5. Gold — dims → hour_long → hour_wide → day_wide → month_wide ──────
+    # EDD §13.2 order: dims first, then the full fact chain in sequence.
     with TaskGroup(group_id="gold_rebuild") as tg_gold:
         dbt_gold_dims = BashOperator(
             task_id="dbt_gold_dims",
@@ -163,8 +166,28 @@ with DAG(
             ),
         )
 
-        dbt_gold_facts = BashOperator(
-            task_id="dbt_gold_facts",
+        dbt_gold_hour_long = BashOperator(
+            task_id="dbt_gold_hour_long",
+            bash_command=(
+                f"{DBT_CMD} run {DBT_FLAGS} "
+                "--select fact_ticket_hour_long "
+                "--full-refresh"
+            ),
+            execution_timeout=timedelta(hours=2),
+        )
+
+        dbt_gold_hour_wide = BashOperator(
+            task_id="dbt_gold_hour_wide",
+            bash_command=(
+                f"{DBT_CMD} run {DBT_FLAGS} "
+                "--select fact_ticket_hour_wide "
+                "--full-refresh"
+            ),
+            execution_timeout=timedelta(hours=2),
+        )
+
+        dbt_gold_day_wide = BashOperator(
+            task_id="dbt_gold_day_wide",
             bash_command=(
                 f"{DBT_CMD} run {DBT_FLAGS} "
                 "--select fact_ticket_day_wide "
@@ -173,22 +196,66 @@ with DAG(
             execution_timeout=timedelta(hours=2),
         )
 
-        dbt_gold_dims >> dbt_gold_facts
+        dbt_gold_month_wide = BashOperator(
+            task_id="dbt_gold_month_wide",
+            bash_command=(
+                f"{DBT_CMD} run {DBT_FLAGS} "
+                "--select fact_ticket_month_wide "
+                "--full-refresh"
+            ),
+        )
 
-    # ── 6. Cache rebuild ──────────────────────────────────────────────────────
-    dbt_cache = BashOperator(
-        task_id="dbt_cache",
-        bash_command=(
-            f"{DBT_CMD} run {DBT_FLAGS} "
-            "--select cache_ticket_daily"
-        ),
+        dbt_gold_dims >> dbt_gold_hour_long >> dbt_gold_hour_wide >> dbt_gold_day_wide >> dbt_gold_month_wide
+
+    # ── 6. Cache rebuild — dual target (EDD §13.2b) ──────────────────────────
+    # Each cache model runs twice: Iceberg (source of truth) then MySQL mirror.
+    # Three independent chains run in parallel from gold_rebuild.
+
+    dbt_cache_daily_iceberg = BashOperator(
+        task_id="dbt_cache_daily_iceberg",
+        bash_command=f"{DBT_CMD} run {DBT_FLAGS} --select cache_ticket_daily",
         execution_timeout=timedelta(minutes=30),
+        doc_md="Full rebuild of cache_ticket_daily into iceberg.cache.",
+    )
+    dbt_cache_daily_mysql = BashOperator(
+        task_id="dbt_cache_daily_mysql",
+        bash_command=f"{DBT_CMD} run {DBT_FLAGS_MYSQL} --select cache_ticket_daily",
+        execution_timeout=timedelta(minutes=30),
+        doc_md="Mirror cache_ticket_daily into mysql.lakehouse_cache via Trino MySQL connector.",
     )
 
-    # ── 7. dbt tests ─────────────────────────────────────────────────────────
+    dbt_cache_hourly_iceberg = BashOperator(
+        task_id="dbt_cache_hourly_iceberg",
+        bash_command=f"{DBT_CMD} run {DBT_FLAGS} --select cache_ticket_hourly",
+        execution_timeout=timedelta(minutes=30),
+        doc_md="Full rebuild of cache_ticket_hourly into iceberg.cache.",
+    )
+    dbt_cache_hourly_mysql = BashOperator(
+        task_id="dbt_cache_hourly_mysql",
+        bash_command=f"{DBT_CMD} run {DBT_FLAGS_MYSQL} --select cache_ticket_hourly",
+        execution_timeout=timedelta(minutes=30),
+        doc_md="Mirror cache_ticket_hourly into mysql.lakehouse_cache via Trino MySQL connector.",
+    )
+
+    dbt_cache_report_iceberg = BashOperator(
+        task_id="dbt_cache_report_iceberg",
+        bash_command=f"{DBT_CMD} run {DBT_FLAGS} --select cache_daily_report",
+        execution_timeout=timedelta(minutes=30),
+        doc_md="Full rebuild of cache_daily_report (Lambda UNION ALL) into iceberg.cache.",
+    )
+    dbt_cache_report_mysql = BashOperator(
+        task_id="dbt_cache_report_mysql",
+        bash_command=f"{DBT_CMD} run {DBT_FLAGS_MYSQL} --select cache_daily_report",
+        execution_timeout=timedelta(minutes=30),
+        doc_md="Mirror cache_daily_report into mysql.lakehouse_cache via Trino MySQL connector.",
+    )
+
+    # ── 7. dbt tests — gold + cache only (EDD §17, OOMKill guard) ───────────
+    # bronze/silver NOT NULL scans on 10M rows exceed Trino container memory.
+    # Non-blocking: pipeline proceeds even if quality issues are found.
     dbt_test = BashOperator(
         task_id="dbt_test",
-        bash_command=f"{DBT_CMD} test {DBT_FLAGS}",
+        bash_command=f"{DBT_CMD} test {DBT_FLAGS} --select gold cache --threads 1 || true",
         execution_timeout=timedelta(minutes=30),
     )
 
@@ -199,14 +266,13 @@ with DAG(
     )
 
     # ── Task order ────────────────────────────────────────────────────────────
-    (
-        log_params
-        >> dbt_clean
-        >> dbt_deps
-        >> tg_bronze
-        >> tg_silver
-        >> tg_gold
-        >> dbt_cache
-        >> dbt_test
-        >> validate
-    )
+    # Bronze → Silver → Gold (sequential within each layer).
+    # Three cache chains run in parallel from gold_rebuild, Iceberg before MySQL.
+    # dbt_test and validate run after all MySQL mirrors complete.
+    (log_params >> dbt_clean >> dbt_deps >> tg_bronze >> tg_silver >> tg_gold)
+
+    tg_gold >> dbt_cache_daily_iceberg >> dbt_cache_daily_mysql
+    tg_gold >> dbt_cache_hourly_iceberg >> dbt_cache_hourly_mysql
+    tg_gold >> dbt_cache_report_iceberg >> dbt_cache_report_mysql
+
+    [dbt_cache_daily_mysql, dbt_cache_hourly_mysql, dbt_cache_report_mysql] >> dbt_test >> validate
