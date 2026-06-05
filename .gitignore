@@ -6,3 +6,10 @@ View/
 
 # Local environment — never commit real secrets
 .env
+
+# dbt local artifacts
+dbt/.user.yml
+dbt/dbt_packages/
+dbt/logs/
+dbt/target/
+dbt/package-lock.yml
